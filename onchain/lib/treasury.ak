@@ -1,79 +1,172 @@
-use aiken/collection/dict.{Dict}
-use aiken/crypto.{Blake2b_256, Hash, ScriptHash, VerificationKeyHash}
-use cardano/assets.{AssetName, PolicyId, Value}
-use cardano/transaction.{Output, OutputReference, Transaction, ValidityRange}
+use aiken/collection/list
+use aiken/interval.{Finite, Interval, IntervalBound}
+use cardano/assets.{AssetName, PolicyId}
+use cardano/transaction.{ValidityRange}
+use cred.{
+  KeyCred, KeySignature, MultisigCred, MultisigWithdrawal, OwnerCred,
+  PresentedCred, TokenCred,
+}
 
 // Treasury
 
-type Treasury {
-  identifier: String,
-  scopes: List<Scope>,
-}
-
-type Scope {
+pub type Scope {
   name: String,
-  owner: OwnerCredential,
-  budget: Dict<PolicyId, Dict<AssetName, Budget>>,
+  owner: OwnerCred,
+  budget_configs: List<(PolicyId, List<(AssetName, BudgetConfig)>)>,
 }
 
-type OwnerCredential {
-  KeyCred(VerificationKeyHash)
-  MultisigCred(ScriptHash)
-  TokenCred(PolicyId)
-}
-
-type Budget {
-  initial_funding: InitialFunding,
-  funds_left: Int,
-  rolling_net_limit: Int,
+pub type BudgetConfig {
+  rolling_net_limit_amount: Int,
   rolling_net_limit_duration_milliseconds: Int,
   recent_withdrawals: List<Withdrawal>,
 }
 
-type InitialFunding {
+pub type Withdrawal {
   amount: Int,
-  date_within: Int,
+  validity_range: FiniteValidityRange,
 }
 
-type Withdrawal {
-  amount: Int,
-  date_within: ValidityRange,
+pub type FiniteValidityRange {
+  lower_bound: Int,
+  upper_bound: Int,
 }
 
 // Actions
 
-type Action {
-  Spend { scopes_spendings: List<Option<Spending>>, rationale: Rationale }
-  ChangeScopeOwners {
-    scopes_owners: List<Option<ScopeOwnerChange>>,
-    rationale: Rationale,
+pub type Spending {
+  /// same size as budget_configs (including zeros)
+  amounts: List<(PolicyId, List<(AssetName, Int)>)>,
+}
+
+const max_validity_range_1_day = 1000 * 3600 * 24
+
+pub fn spend(
+  presented_creds: List<PresentedCred>,
+  Spending { amounts }: Spending,
+  Interval { lower_bound, upper_bound }: ValidityRange,
+  Scope { name, owner, budget_configs: old_budgets }: Scope,
+  Scope { name: new_name, owner: new_owner, budget_configs: new_budgets }: Scope,
+) -> Bool {
+  // Check that the presented credentials contain the scope owner credentials
+  expect owner_cred_presented(owner, presented_creds)
+
+  // Check that validity range is shorter than 1 full day,
+  // to prevent time manipulation attack of the rolling net limit.
+  expect IntervalBound { bound_type: Finite(lower_bound), .. } = lower_bound
+  expect IntervalBound { bound_type: Finite(upper_bound), .. } = upper_bound
+  expect upper_bound > lower_bound
+  expect upper_bound - lower_bound <= max_validity_range_1_day
+
+  // The scope name and owner must match
+  expect name == new_name
+  expect owner == new_owner
+
+  // Spending amounts and budget configs must have the same length
+  let spend_len = list.length(amounts)
+  let old_len = list.length(old_budgets)
+  let new_len = list.length(new_budgets)
+  expect spend_len == old_len && old_len == new_len
+
+  // Spendings for each token must follow the treasury rules
+  let _ = {
+    let
+      (spend_policy, spend_assets),
+      (old_policy, old_assets),
+      (new_policy, new_assets),
+    <- list.map3(amounts, old_budgets, new_budgets)
+    expect spend_policy == old_policy && old_policy == new_policy
+    let
+      (spend_asset, spend_amount),
+      (old_asset, old_budget),
+      (new_asset, new_budget),
+    <- list.map3(spend_assets, old_assets, new_assets)
+    expect spend_asset == old_asset && old_asset == new_asset
+    check_token_spending(
+      FiniteValidityRange { lower_bound, upper_bound },
+      spend_amount,
+      old_budget,
+      new_budget,
+    )
+  }
+
+  True
+}
+
+/// Check that the owner credentials are presented
+fn owner_cred_presented(
+  owner: OwnerCred,
+  presented_creds: List<PresentedCred>,
+) -> Bool {
+  when owner is {
+    KeyCred(key) ->
+      list.any(presented_creds, fn(cred) { cred == KeySignature(key) })
+    MultisigCred(owner_script_hash) -> {
+      let cred <- list.any(presented_creds)
+      when cred is {
+        MultisigWithdrawal { script_hash, .. } ->
+          script_hash == owner_script_hash
+        _ -> False
+      }
+    }
+    TokenCred(_policy_id) -> todo @"Token cred"
   }
 }
 
-type Rationale {
-  url: String,
-  hash: Hash<Blake2b_256, ByteArray>,
-}
-
-type Spending {
-  presented_credentials: List<PresentedCredential>,
-  amount: Value,
-}
-
-type ScopeOwnerChange {
-  previous_owner: OwnerCredential,
-  new_owner: OwnerCredential,
-}
-
-type PresentedCredential {
-  KeySignature(VerificationKeyHash)
-  MultisigWithdrawal { script_hash: ScriptHash, withdrawal_index: Int }
-}
-
-fn spend(
-  scopes_spendings: List<Option<Spending>>,
-  old_treasury: Treasury,
-  new_treasury: Treasury,
+/// Spending validation
+///
+/// Check that the spending amount is within the budget config limits.
+/// In that case, only the owner credential is required.
+/// Otherwise, all scope owners credentials are required.
+///
+/// The spending amount, when added to the recent withdrawals within the rolling window,
+/// must not exceed the budget rolling net limit.
+fn check_token_spending(
+  validity_range: FiniteValidityRange,
+  spending_amount: Int,
+  old_config: BudgetConfig,
+  new_config: BudgetConfig,
 ) {
-  todo @"spend from treasury"
+  // Extract the old and new budget config limits
+  let BudgetConfig {
+    rolling_net_limit_amount: limit_amount,
+    rolling_net_limit_duration_milliseconds: limit_duration,
+    recent_withdrawals,
+  } = old_config
+  let BudgetConfig {
+    rolling_net_limit_amount: new_limit_amount,
+    rolling_net_limit_duration_milliseconds: new_limit_duration,
+    recent_withdrawals: new_recent_withdrawals,
+  } = new_config
+
+  // Check that the budget config limits have not changed
+  expect limit_amount == new_limit_amount
+  expect limit_duration == new_limit_duration
+
+  // Check that the new_recent_withdrawals is correct:
+  //  - contains exactly all withdrawals within the rolling window
+  //  - with the most recent withdrawal first, if non-zero
+  let cutoff_time = validity_range.lower_bound - limit_duration
+  let old_withdrawals_dropped: List<Withdrawal> = {
+    let head, accum <- list.foldr(recent_withdrawals, [])
+    if head.validity_range.upper_bound >= cutoff_time {
+      [head, ..accum]
+    } else {
+      accum
+    }
+  }
+  if spending_amount == 0 {
+    expect new_recent_withdrawals == old_withdrawals_dropped
+  } else {
+    expect
+      new_recent_withdrawals == [
+        Withdrawal { amount: spending_amount, validity_range },
+        ..old_withdrawals_dropped
+      ]
+  }
+
+  // Check spending amount against budget limits
+  expect spending_amount >= 0
+  let rolling_spending =
+    list.foldl(new_recent_withdrawals, 0, fn(w, acc) { acc + w.amount })
+  expect rolling_spending <= limit_amount
 }
