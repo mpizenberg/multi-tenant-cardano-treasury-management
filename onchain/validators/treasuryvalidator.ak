@@ -1,24 +1,31 @@
+use aiken/builtin
 use aiken/collection/list
 use aiken/crypto.{Blake2b_256, Hash}
-use cardano/address.{Credential}
+use cardano/address.{Credential, Script, VerificationKey}
 use cardano/assets.{AssetName, PolicyId, Value}
 use cardano/certificate.{Certificate}
 use cardano/governance.{ProposalProcedure, Voter}
 use cardano/transaction.{
   InlineDatum, Input, Output, OutputReference, Transaction,
 }
-use cred.{Badge}
-use treasury.{Scope, Spending}
+use cred.{Badge, KeySignature, ScriptWithdrawal, TokenProof}
+use treasury
 
 pub type Datum {
   previous_input_index: Int,
-  scope: Scope,
+  scope: treasury.Scope,
 }
 
 pub type Redeemer {
+  /// List of badges presented in the redeemer.
+  /// The list may contain variants granting the same permissions,
+  /// so their count is not sufficient to check for all owners credentials.
   presented_badges: List<Badge>,
+  /// Index of the input being spent.
   spent_input_index: Int,
+  /// Index of the next output to be created.
   next_output_index: Int,
+  /// Action to be performed.
   action: Action,
 }
 
@@ -28,7 +35,7 @@ pub type Action {
 }
 
 pub type ActionType {
-  Spend(Spending)
+  Spend(treasury.Spending)
 }
 
 pub type Rationale {
@@ -37,7 +44,7 @@ pub type Rationale {
 }
 
 validator placeholder {
-  mint(_redeemer: Data, _policy_id: PolicyId, _self: Transaction) {
+  mint(_redeemer: Data, _policy_id: PolicyId, _tx: Transaction) {
     fail
   }
 
@@ -45,17 +52,23 @@ validator placeholder {
     datum: Option<Datum>,
     Redeemer { presented_badges, spent_input_index, next_output_index, action }: Redeemer,
     utxo: OutputReference,
-    self: Transaction,
+    tx: Transaction,
   ) {
     // Check that all presented badges are valid
-    check_presented_badges(presented_badges)
+    list.for_each(presented_badges, check_badge(tx, _))
 
+    // TODO: Count the number of scope owners having presented a badge.
+    // If all present, anything is allowed.
+    // Above a certain threshold, a contestation period starts.
+    // After repeated contestations, the threshold is enough to unblock the situation.
+    //
+    // Otherwise, in the normal case
     when datum is {
       None -> todo @"handle logic with no datum"
       Some(old_datum) -> {
         // Retrieve the consumed output
         expect Some(Input { output_reference, output: spent_output }) =
-          list.at(self.inputs, spent_input_index)
+          list.at(tx.inputs, spent_input_index)
         expect output_reference == utxo
 
         // Make sure the new utxo stays at the same address
@@ -64,7 +77,7 @@ validator placeholder {
           value: new_value,
           datum: InlineDatum(new_datum),
           ..
-        }) = list.at(self.outputs, next_output_index)
+        }) = list.at(tx.outputs, next_output_index)
         expect address == spent_output.address
 
         // Make sure the new utxo links to the previous utxo (prevent double satisfaction)
@@ -81,7 +94,7 @@ validator placeholder {
             treasury.spend(
               presented_badges,
               spending,
-              self.validity_range,
+              tx.validity_range,
               old_datum.scope,
               scope,
             )
@@ -91,19 +104,19 @@ validator placeholder {
     }
   }
 
-  withdraw(_redeemer: Data, _account: Credential, _self: Transaction) {
+  withdraw(_redeemer: Data, _account: Credential, _tx: Transaction) {
     todo @"withdraw logic goes here"
   }
 
-  publish(_redeemer: Data, _certificate: Certificate, _self: Transaction) {
+  publish(_redeemer: Data, _certificate: Certificate, _tx: Transaction) {
     todo @"publish logic goes here"
   }
 
-  vote(_redeemer: Data, _voter: Voter, _self: Transaction) {
+  vote(_redeemer: Data, _voter: Voter, _tx: Transaction) {
     todo @"vote logic goes here"
   }
 
-  propose(_redeemer: Data, _proposal: ProposalProcedure, _self: Transaction) {
+  propose(_redeemer: Data, _proposal: ProposalProcedure, _tx: Transaction) {
     todo @"propose logic goes here"
   }
 
@@ -119,9 +132,55 @@ validator placeholder {
 }
 
 /// Check that all presented badges are valid.
-fn check_presented_badges(badges: List<Badge>) {
-  let badge <- list.for_each(badges)
-  todo @"Check that badge is valid"
+/// Doesn’t check that they are also part of the scope owners, just valid.
+fn check_badge(tx: Transaction, badge: Badge) {
+  // The following code is checked for each badge
+  when badge is {
+    KeySignature { token, key } -> {
+      // Check that the key signature is present
+      expect list.has(tx.extra_signatories, key)
+      // When a token is presented, check its legitimacy
+      when token is {
+        None -> Void
+        Some(token_proof) -> {
+          let cred <- check_token_legitimacy(tx, token_proof)
+          cred == VerificationKey(key)
+        }
+      }
+    }
+    ScriptWithdrawal { token, script_hash, withdrawal_index } -> {
+      // Check that the script withdrawal is legitimate to validate the script
+      expect Some(withdrawal) = list.at(tx.withdrawals, withdrawal_index)
+      expect Script(withdrawal_script_hash) = builtin.fst_pair(withdrawal)
+      expect withdrawal_script_hash == script_hash
+      // When a token is presented, check its legitimacy
+      when token is {
+        None -> Void
+        Some(token_proof) -> {
+          let cred <- check_token_legitimacy(tx, token_proof)
+          cred == Script(script_hash)
+        }
+      }
+    }
+  }
+}
+
+/// Check that the token is legitimate:
+/// - located in the advertised reference input
+/// - with the correct policy ID
+/// - owned by the advertised credential
+fn check_token_legitimacy(
+  tx: Transaction,
+  token: TokenProof,
+  check_payment_cred: fn(Credential) -> Bool,
+) -> Void {
+  // Extract the ref input at the given index
+  expect Some(Input { output, .. }) =
+    list.at(tx.reference_inputs, token.ref_input_index)
+  // Check that the ref input contains the token
+  expect list.has(assets.policies(output.value), token.policy_id)
+  // Check that the ref input is owned by the correct credential
+  expect check_payment_cred(output.address.payment_credential)
 }
 
 /// Convert a list of assets into a Value.

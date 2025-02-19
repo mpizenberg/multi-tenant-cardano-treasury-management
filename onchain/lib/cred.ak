@@ -26,12 +26,18 @@ pub type ScopeOwnerCred {
 ///  - either by a key in the required signatures
 ///  - or by a script withdrawal
 pub type Badge {
-  KeySignature { token: Option<PolicyId>, key: VerificationKeyHash }
+  KeySignature { token: Option<TokenProof>, key: VerificationKeyHash }
   ScriptWithdrawal {
-    token: Option<PolicyId>,
+    token: Option<TokenProof>,
     script_hash: ScriptHash,
     withdrawal_index: Int,
   }
+}
+
+/// Token policy ID and location in the transaction reference inputs
+pub type TokenProof {
+  policy_id: PolicyId,
+  ref_input_index: Int,
 }
 
 /// Check that the owner badge is presented
@@ -57,10 +63,10 @@ pub fn owner_badge_is_presented(
     TokenCred(owner_policy_id) -> {
       let badge <- list.any(presented_badges)
       when badge is {
-        KeySignature { token: Some(token_policy_id), .. } ->
-          token_policy_id == owner_policy_id
-        ScriptWithdrawal { token: Some(token_policy_id), .. } ->
-          token_policy_id == owner_policy_id
+        KeySignature { token: Some(TokenProof { policy_id, .. }), .. } ->
+          policy_id == owner_policy_id
+        ScriptWithdrawal { token: Some(TokenProof { policy_id, .. }), .. } ->
+          policy_id == owner_policy_id
         _ -> False
       }
     }
