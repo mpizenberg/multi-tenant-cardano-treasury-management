@@ -2,7 +2,7 @@ use aiken/collection/list
 use aiken/interval.{Finite, Interval, IntervalBound}
 use cardano/assets.{AssetName, PolicyId}
 use cardano/transaction.{ValidityRange}
-use cred.{Badge, ScopeOwnerCred}
+use cred.{ScopeOwnerCred}
 
 // Treasury
 
@@ -48,14 +48,15 @@ const max_validity_range_1_day = 1000 * 3600 * 24
 
 /// Spending verification logic of the Treasury
 pub fn spend(
-  presented_badges: List<Badge>,
+  /// Scope owners who have presented valid badges
+  active_scope_owners: List<ScopeOwnerCred>,
   Spending { amounts }: Spending,
   Interval { lower_bound, upper_bound }: ValidityRange,
   Scope { name, owner, budget_configs: old_budgets }: Scope,
   Scope { name: new_name, owner: new_owner, budget_configs: new_budgets }: Scope,
 ) -> Bool {
-  // Check that the presented credentials contain the scope owner credentials
-  expect cred.owner_badge_is_presented(owner, presented_badges)
+  // Check that this scope owner is present in the active scope owners list
+  expect list.has(active_scope_owners, owner)
 
   // Check that validity range is shorter than 1 full day,
   // to prevent time manipulation attack of the rolling net limit.
@@ -89,6 +90,7 @@ pub fn spend(
     <- list.map3(spend_assets, old_assets, new_assets)
     expect spend_asset == old_asset && old_asset == new_asset
     check_token_spending(
+      active_scope_owners,
       FiniteValidityRange { lower_bound, upper_bound },
       spend_amount,
       old_budget,
@@ -108,6 +110,8 @@ pub fn spend(
 /// The spending amount, when added to the recent withdrawals within the rolling window,
 /// must not exceed the budget rolling net limit.
 fn check_token_spending(
+  /// Scope owners who have presented valid badges
+  active_scope_owners: List<ScopeOwnerCred>,
   validity_range: FiniteValidityRange,
   spending_amount: Int,
   old_config: BudgetConfig,
@@ -151,9 +155,11 @@ fn check_token_spending(
       ]
   }
 
-  // Check spending amount against budget limits
+  // Check spending amount against budget limits,
+  // proportionally to the number of scope owners who signed the transaction.
   expect spending_amount >= 0
+  let owners_count = list.length(active_scope_owners)
   let rolling_spending =
     list.foldl(new_recent_withdrawals, 0, fn(w, acc) { acc + w.amount })
-  expect rolling_spending <= limit_amount
+  rolling_spending <= owners_count * limit_amount
 }

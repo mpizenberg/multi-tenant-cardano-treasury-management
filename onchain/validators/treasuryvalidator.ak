@@ -103,7 +103,7 @@ validator placeholder {
 
               // Check all other spending rules
               treasury.spend(
-                presented_badges,
+                active_scope_owners,
                 spending,
                 tx.validity_range,
                 old_datum.scope,
