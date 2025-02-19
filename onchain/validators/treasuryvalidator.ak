@@ -9,6 +9,7 @@ use cardano/transaction.{
   InlineDatum, Input, Output, OutputReference, Transaction,
 }
 use cred.{Badge, KeySignature, ScriptWithdrawal, TokenProof}
+use env
 use treasury
 
 pub type Datum {
@@ -57,47 +58,58 @@ validator placeholder {
     // Check that all presented badges are valid
     list.for_each(presented_badges, check_badge(tx, _))
 
-    // TODO: Count the number of scope owners having presented a badge.
-    // If all present, anything is allowed.
-    // Above a certain threshold, a contestation period starts.
-    // After repeated contestations, the threshold is enough to unblock the situation.
-    //
-    // Otherwise, in the normal case
-    when datum is {
-      None -> todo @"handle logic with no datum"
-      Some(old_datum) -> {
-        // Retrieve the consumed output
-        expect Some(Input { output_reference, output: spent_output }) =
-          list.at(tx.inputs, spent_input_index)
-        expect output_reference == utxo
+    // Keep scope owners having presented a badge.
+    let active_scope_owners =
+      list.filter(
+        env.scope_owners,
+        cred.owner_badge_is_presented(_, presented_badges),
+      )
 
-        // Make sure the new utxo stays at the same address
-        expect Some(Output {
-          address,
-          value: new_value,
-          datum: InlineDatum(new_datum),
-          ..
-        }) = list.at(tx.outputs, next_output_index)
-        expect address == spent_output.address
+    // If all scope owners are present, anything is allowed.
+    if active_scope_owners == env.scope_owners {
+      True
+    } else {
+      when datum is {
+        None ->
+          // If no datum is present, for example due to a send mistake,
+          // the only action authorized is to recover the funds,
+          // with a certain threshold and a contestation period.
+          // After repeated contestations, the threshold is enough to unblock the situation.
+          todo @"recover the funds"
+        Some(old_datum) -> {
+          // Retrieve the consumed output
+          expect Some(Input { output_reference, output: spent_output }) =
+            list.at(tx.inputs, spent_input_index)
+          expect output_reference == utxo
 
-        // Make sure the new utxo links to the previous utxo (prevent double satisfaction)
-        expect Datum { previous_input_index, scope } = new_datum
-        expect previous_input_index == spent_input_index
+          // Make sure the new utxo stays at the same address
+          expect Some(Output {
+            address,
+            value: new_value,
+            datum: InlineDatum(new_datum),
+            ..
+          }) = list.at(tx.outputs, next_output_index)
+          expect address == spent_output.address
 
-        when action.action_type is {
-          Spend(spending) -> {
-            // Check that the value difference matches the spending amount
-            let value_spent = from_assets_with_zeros(spending.amounts)
-            expect assets.merge(new_value, value_spent) == spent_output.value
+          // Make sure the new utxo links to the previous utxo (prevent double satisfaction)
+          expect Datum { previous_input_index, scope } = new_datum
+          expect previous_input_index == spent_input_index
 
-            // Check all other spending rules
-            treasury.spend(
-              presented_badges,
-              spending,
-              tx.validity_range,
-              old_datum.scope,
-              scope,
-            )
+          when action.action_type is {
+            Spend(spending) -> {
+              // Check that the value difference matches the spending amount
+              let value_spent = from_assets_with_zeros(spending.amounts)
+              expect assets.merge(new_value, value_spent) == spent_output.value
+
+              // Check all other spending rules
+              treasury.spend(
+                presented_badges,
+                spending,
+                tx.validity_range,
+                old_datum.scope,
+                scope,
+              )
+            }
           }
         }
       }
