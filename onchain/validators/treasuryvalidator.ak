@@ -17,7 +17,7 @@ pub type Datum {
   scope: treasury.Scope,
 }
 
-pub type Redeemer {
+pub type SpendRedeemer {
   /// List of badges presented in the redeemer.
   /// The list may contain variants granting the same permissions,
   /// so their count is not sufficient to check for all owners credentials.
@@ -26,17 +26,17 @@ pub type Redeemer {
   spent_input_index: Int,
   /// Index of the next output to be created.
   next_output_index: Int,
-  /// Action to be performed.
-  action: Action,
-}
-
-pub type Action {
+  /// Rationale for the action.
   rationale: Rationale,
+  /// Action to be performed.
   action_type: ActionType,
 }
 
 pub type ActionType {
+  /// Normal spending.
   Spend(treasury.Spending)
+  /// Start recovering funds with a contestation period.
+  StartRecover
 }
 
 pub type Rationale {
@@ -51,7 +51,13 @@ validator placeholder {
 
   spend(
     datum: Option<Datum>,
-    Redeemer { presented_badges, spent_input_index, next_output_index, action }: Redeemer,
+    SpendRedeemer {
+      presented_badges,
+      spent_input_index,
+      next_output_index,
+      action_type,
+      ..
+    }: SpendRedeemer,
     utxo: OutputReference,
     tx: Transaction,
   ) {
@@ -95,7 +101,7 @@ validator placeholder {
           expect Datum { previous_input_index, scope } = new_datum
           expect previous_input_index == spent_input_index
 
-          when action.action_type is {
+          when action_type is {
             Spend(spending) -> {
               // Check that the value difference matches the spending amount
               let value_spent = from_assets_with_zeros(spending.amounts)
@@ -110,6 +116,9 @@ validator placeholder {
                 scope,
               )
             }
+            StartRecover ->
+              // When starting to recover funds
+              todo @"recover logic goes here"
           }
         }
       }
