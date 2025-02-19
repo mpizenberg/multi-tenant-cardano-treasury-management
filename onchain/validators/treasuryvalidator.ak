@@ -7,7 +7,7 @@ use cardano/governance.{ProposalProcedure, Voter}
 use cardano/transaction.{
   InlineDatum, Input, Output, OutputReference, Transaction,
 }
-use cred.{PresentedCred}
+use cred.{Badge}
 use treasury.{Scope, Spending}
 
 pub type Datum {
@@ -16,7 +16,7 @@ pub type Datum {
 }
 
 pub type Redeemer {
-  presented_credentials: List<PresentedCred>,
+  presented_badges: List<Badge>,
   spent_input_index: Int,
   next_output_index: Int,
   action: Action,
@@ -43,17 +43,12 @@ validator placeholder {
 
   spend(
     datum: Option<Datum>,
-    Redeemer {
-      presented_credentials,
-      spent_input_index,
-      next_output_index,
-      action,
-    }: Redeemer,
+    Redeemer { presented_badges, spent_input_index, next_output_index, action }: Redeemer,
     utxo: OutputReference,
     self: Transaction,
   ) {
-    // Check that all presented credentials are valid
-    check_presented_credentials(presented_credentials)
+    // Check that all presented badges are valid
+    check_presented_badges(presented_badges)
 
     when datum is {
       None -> todo @"handle logic with no datum"
@@ -84,7 +79,7 @@ validator placeholder {
 
             // Check all other spending rules
             treasury.spend(
-              presented_credentials,
+              presented_badges,
               spending,
               self.validity_range,
               old_datum.scope,
@@ -123,10 +118,10 @@ validator placeholder {
   // // use cardano/script_context.{ScriptContext}
 }
 
-/// Check that all presented credentials are valid.
-fn check_presented_credentials(credentials: List<PresentedCred>) {
-  let cred <- list.for_each(credentials)
-  todo @"Check that cred is valid"
+/// Check that all presented badges are valid.
+fn check_presented_badges(badges: List<Badge>) {
+  let badge <- list.for_each(badges)
+  todo @"Check that badge is valid"
 }
 
 /// Convert a list of assets into a Value.

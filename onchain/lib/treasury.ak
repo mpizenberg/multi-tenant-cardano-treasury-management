@@ -2,30 +2,36 @@ use aiken/collection/list
 use aiken/interval.{Finite, Interval, IntervalBound}
 use cardano/assets.{AssetName, PolicyId}
 use cardano/transaction.{ValidityRange}
-use cred.{
-  KeyCred, KeySignature, MultisigCred, MultisigWithdrawal, OwnerCred,
-  PresentedCred, TokenCred,
-}
+use cred.{Badge, ScopeOwnerCred}
 
 // Treasury
 
+/// One scope of the multi-tenant treasury
 pub type Scope {
   name: String,
-  owner: OwnerCred,
+  owner: ScopeOwnerCred,
   budget_configs: List<(PolicyId, List<(AssetName, BudgetConfig)>)>,
 }
 
+/// Budget configuration for each token.
+/// For example, the config for Ada, or for USDM.
+///
+/// For each token, the budget config specifies the rolling net limit amount and duration.
+/// It also keeps track of recent withdrawals to enforce the rolling net limit.
 pub type BudgetConfig {
   rolling_net_limit_amount: Int,
   rolling_net_limit_duration_milliseconds: Int,
   recent_withdrawals: List<Withdrawal>,
 }
 
+/// One withdrawal from the treasury.
+/// It contains the amount withdrawn and when it happened (within a range).
 pub type Withdrawal {
   amount: Int,
   validity_range: FiniteValidityRange,
 }
 
+/// Validity range with finite bounds.
 pub type FiniteValidityRange {
   lower_bound: Int,
   upper_bound: Int,
@@ -40,15 +46,16 @@ pub type Spending {
 
 const max_validity_range_1_day = 1000 * 3600 * 24
 
+/// Spending verification logic of the Treasury
 pub fn spend(
-  presented_creds: List<PresentedCred>,
+  presented_badges: List<Badge>,
   Spending { amounts }: Spending,
   Interval { lower_bound, upper_bound }: ValidityRange,
   Scope { name, owner, budget_configs: old_budgets }: Scope,
   Scope { name: new_name, owner: new_owner, budget_configs: new_budgets }: Scope,
 ) -> Bool {
   // Check that the presented credentials contain the scope owner credentials
-  expect owner_cred_presented(owner, presented_creds)
+  expect cred.owner_badge_is_presented(owner, presented_badges)
 
   // Check that validity range is shorter than 1 full day,
   // to prevent time manipulation attack of the rolling net limit.
@@ -90,26 +97,6 @@ pub fn spend(
   }
 
   True
-}
-
-/// Check that the owner credentials are presented
-fn owner_cred_presented(
-  owner: OwnerCred,
-  presented_creds: List<PresentedCred>,
-) -> Bool {
-  when owner is {
-    KeyCred(key) ->
-      list.any(presented_creds, fn(cred) { cred == KeySignature(key) })
-    MultisigCred(owner_script_hash) -> {
-      let cred <- list.any(presented_creds)
-      when cred is {
-        MultisigWithdrawal { script_hash, .. } ->
-          script_hash == owner_script_hash
-        _ -> False
-      }
-    }
-    TokenCred(_policy_id) -> todo @"Token cred"
-  }
 }
 
 /// Spending validation
