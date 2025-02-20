@@ -12,6 +12,8 @@ use cred.{Badge, KeySignature, ScriptWithdrawal, TokenProof}
 use env
 use treasury
 
+// Spending ----------------------------------------------------------
+
 pub type Datum {
   previous_input_index: Int,
   scope: treasury.Scope,
@@ -43,6 +45,24 @@ pub type Rationale {
   url: String,
   hash: Hash<Blake2b_256, ByteArray>,
 }
+
+// Recovery ----------------------------------------------------------
+
+type RecoveryDatum {
+  /// Index of the previous input being spent.
+  previous_input_index: Int,
+  /// Counter for the number of times the recovery process was contested.
+  contestation_count: Int,
+}
+
+type ContestationDatum {
+  /// Index of the previous input being spent.
+  previous_input_index: Int,
+  /// Counter for the number of times the recovery process was contested.
+  contestation_count: Int,
+}
+
+// Validator ---------------------------------------------------------
 
 validator placeholder {
   mint(_redeemer: Data, _policy_id: PolicyId, _tx: Transaction) {
@@ -116,9 +136,32 @@ validator placeholder {
                 scope,
               )
             }
-            StartRecover ->
-              // When starting to recover funds
+            // When starting to recover funds, only the UTxO to recover is needed.
+            // The goal is to move the utxo into a new one with a dedicated datum,
+            // indicating it is supposed to be recovered after the contestation period.
+            // Later, after the contestation period has passed,
+            // the recovered funds need to be merged into one scope.
+            StartRecover -> {
+              // Retrieve the consumed output
+              expect Some(Input { output_reference, output: spent_output }) =
+                list.at(tx.inputs, spent_input_index)
+              expect output_reference == utxo
+
+              // Make sure the new utxo stays at the same address
+              expect Some(Output {
+                address,
+                value: new_value,
+                datum: InlineDatum(new_datum),
+                ..
+              }) = list.at(tx.outputs, next_output_index)
+              expect address == spent_output.address
+
+              // Make sure the new value is the same as the old one
+              expect new_value == spent_output.value
+
+              // Make sure the new datum is a RecoveryDatum
               todo @"recover logic goes here"
+            }
           }
         }
       }

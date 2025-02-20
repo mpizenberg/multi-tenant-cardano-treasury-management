@@ -157,6 +157,10 @@ fn check_token_spending(
 
   // Check spending amount against budget limits,
   // proportionally to the number of scope owners who signed the transaction.
+  // TODO: proportional spending may result in losses that are square
+  // the number of compromised credentials,
+  // so maybe a majority check is better up to 2x,
+  // then a unanimous signature for anything above that.
   expect spending_amount >= 0
   let owners_count = list.length(active_scope_owners)
   let rolling_spending =

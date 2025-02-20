@@ -19,3 +19,5 @@ pub const scope_owners =
     ScriptCred(script_hash),
     TokenCred(token_policy_id),
   ]
+
+pub const publish_allowed = True
