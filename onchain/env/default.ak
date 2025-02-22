@@ -21,3 +21,14 @@ pub const scope_owners =
   ]
 
 pub const publish_allowed = True
+
+pub const stake_allowed = False
+
+/// Asset name used for the root NFT
+pub const root_asset_name = "Treasury Root"
+
+/// 5 Ada as minAda for the root utxo (containing the root NFT and the script)
+pub const root_min_ada = 5000000
+
+/// 2 Ada as minAda for each scope
+pub const scope_min_ada = 2000000

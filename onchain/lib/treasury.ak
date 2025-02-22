@@ -1,10 +1,18 @@
 use aiken/collection/list
 use aiken/interval.{Finite, Interval, IntervalBound}
+use aiken/primitive/string
+use cardano/address.{Script}
 use cardano/assets.{AssetName, PolicyId}
-use cardano/transaction.{ValidityRange}
+use cardano/transaction.{InlineDatum, Output, ValidityRange}
 use cred.{ScopeOwnerCred}
+use env
 
 // Treasury
+
+pub type SpendDatum {
+  previous_input_index: Option<Int>,
+  scope: Scope,
+}
 
 /// One scope of the multi-tenant treasury
 pub type Scope {
@@ -35,6 +43,61 @@ pub type Withdrawal {
 pub type FiniteValidityRange {
   lower_bound: Int,
   upper_bound: Int,
+}
+
+// Initialization
+
+pub fn validate_root_output(
+  scope_names: List<String>,
+  output: Output,
+  policy_id: PolicyId,
+) {
+  // Check that the output address is the treasury address
+  expect output.address.payment_credential == Script(policy_id)
+
+  // Check that the stake credential is empty if not allowed to stake
+  expect output.address.stake_credential == None || env.stake_allowed
+
+  // Check that the ref script is stored in the root output
+  expect output.reference_script == Some(policy_id)
+
+  // Check that the output contains only some ada and the root NFT
+  let expected_value =
+    assets.from_lovelace(env.root_min_ada)
+      |> assets.add(policy_id, env.root_asset_name, 1)
+  expect output.value == expected_value
+
+  // Check that the datum contains the scope names
+  expect InlineDatum(data) = output.datum
+  expect datum_scopes_names: List<String> = data
+  expect datum_scopes_names == scope_names
+}
+
+pub fn validate_scope_initialization(
+  scope: Scope,
+  output: Output,
+  policy_id: PolicyId,
+) {
+  // Check that the output address is the treasury address
+  expect output.address.payment_credential == Script(policy_id)
+
+  // Check that the stake credential is empty if not allowed to stake
+  expect output.address.stake_credential == None || env.stake_allowed
+
+  // Check that there is no ref script in the output
+  expect output.reference_script == None
+
+  // Check that the output contains only some ada and the NFT for the scope
+  let expected_value =
+    assets.from_lovelace(env.scope_min_ada)
+      |> assets.add(policy_id, string.to_bytearray(scope.name), 1)
+  expect output.value == expected_value
+
+  // Check that the datum is exactly this scope
+  expect InlineDatum(data) = output.datum
+  expect SpendDatum { previous_input_index, scope: datum_scope } = data
+  expect previous_input_index == None
+  expect datum_scope == scope
 }
 
 // Actions

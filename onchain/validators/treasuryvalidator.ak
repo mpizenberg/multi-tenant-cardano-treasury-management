@@ -1,9 +1,11 @@
 use aiken/builtin
+use aiken/collection/dict
 use aiken/collection/list
 use aiken/crypto.{Blake2b_256, Hash}
+use aiken/primitive/string
 use cardano/address.{Credential, Script, VerificationKey}
 use cardano/assets.{AssetName, PolicyId, Value}
-use cardano/certificate.{Certificate}
+use cardano/certificate.{Certificate, RegisterCredential, UnregisterCredential}
 use cardano/governance.{ProposalProcedure, Voter}
 use cardano/transaction.{
   InlineDatum, Input, Output, OutputReference, Transaction,
@@ -12,12 +14,14 @@ use cred.{Badge, KeySignature, ScriptWithdrawal, TokenProof}
 use env
 use treasury
 
-// Spending ----------------------------------------------------------
+// Initialization ----------------------------------------------------
 
-pub type Datum {
-  previous_input_index: Int,
-  scope: treasury.Scope,
+pub type InitialMintRedeemer {
+  scopes: List<treasury.Scope>,
+  register_cert_index: Int,
 }
+
+// Spending ----------------------------------------------------------
 
 pub type SpendRedeemer {
   /// List of badges presented in the redeemer.
@@ -64,13 +68,54 @@ type ContestationDatum {
 
 // Validator ---------------------------------------------------------
 
-validator placeholder {
-  mint(_redeemer: Data, _policy_id: PolicyId, _tx: Transaction) {
-    fail
+/// Apply a function to the zipped list created from the two lists.
+fn for_each_2(l1: List<a>, l2: List<b>, do: fn(a, b) -> Void) {
+  let zipped = list.zip(l1, l2)
+  list.for_each(zipped, fn((x1, x2)) { do(x1, x2) })
+}
+
+validator placeholder(initialization_utxo_ref: OutputReference) {
+  mint(redeemer: InitialMintRedeemer, policy_id: PolicyId, tx: Transaction) {
+    // Check that the initialization UTXO is spent
+    expect
+      list.any(
+        tx.inputs,
+        fn(input) { input.output_reference == initialization_utxo_ref },
+      )
+
+    // Check that the script is also registered
+    let InitialMintRedeemer { scopes, register_cert_index } = redeemer
+    expect Some(RegisterCredential { credential: Script(script_hash), .. }) =
+      list.at(tx.certificates, register_cert_index)
+    expect script_hash == policy_id
+
+    // Check that scope names are unique
+    // TODO: optimize this check
+    let scope_names = list.map(scopes, fn(scope) { scope.name })
+    expect list.length(scope_names) == list.length(list.unique(scope_names))
+
+    // Check that the first output contains the main treasury NFT.
+    expect [output_0, ..other_outputs] = tx.outputs
+    treasury.validate_root_output(scope_names, output_0, policy_id)
+
+    // Check that other outputs contain each one of the scopes
+    let _ = {
+      let scope, output <- for_each_2(scopes, other_outputs)
+      treasury.validate_scope_initialization(scope, output, policy_id)
+    }
+
+    // Check that only the expected NFTs are minted.
+    let minted = assets.tokens(tx.mint, policy_id)
+    let just_root = dict.insert(dict.empty, env.root_asset_name, 1)
+    let expected_mint = {
+      let scope_name, dict_acc <- list.foldl(scope_names, just_root)
+      dict.insert(dict_acc, string.to_bytearray(scope_name), 1)
+    }
+    minted == expected_mint
   }
 
   spend(
-    datum: Option<Datum>,
+    datum: Option<treasury.SpendDatum>,
     SpendRedeemer {
       presented_badges,
       spent_input_index,
@@ -118,8 +163,8 @@ validator placeholder {
           expect address == spent_output.address
 
           // Make sure the new utxo links to the previous utxo (prevent double satisfaction)
-          expect Datum { previous_input_index, scope } = new_datum
-          expect previous_input_index == spent_input_index
+          expect treasury.SpendDatum { previous_input_index, scope } = new_datum
+          expect previous_input_index == Some(spent_input_index)
 
           when action_type is {
             Spend(spending) -> {
@@ -172,7 +217,20 @@ validator placeholder {
     todo @"withdraw logic goes here"
   }
 
-  publish(_redeemer: Data, _certificate: Certificate, _tx: Transaction) {
+  publish(_redeemer: Data, certificate: Certificate, tx: Transaction) {
+    when certificate is {
+      RegisterCredential { .. } -> {
+        // Registering can only be done at initialization
+        expect
+          list.any(
+            tx.inputs,
+            fn(input) { input.output_reference == initialization_utxo_ref },
+          )
+      }
+      UnregisterCredential { .. } -> todo @"other publish logic goes here"
+      _ -> todo @"unregister when the treasury is closed or its address changes"
+    }
+
     todo @"publish logic goes here"
   }
 

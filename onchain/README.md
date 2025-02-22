@@ -33,8 +33,8 @@ Offchain libraries and a web app make these steps easy to execute.
 Initialization of the treasury consists in minting a set of NFTs,
 one for each scope of the treasury, and another main one, for tracking purposes.
 The main NFT mint is parameterized by a UTxO to consume to guarantee its unicity.
-Each scope NFT is configured with the budget credentials
-and rules for the corresponding scope are detailed in an updatable datum.
+Each scope NFT is configured with an owner credentials
+and rules for the corresponding scope, detailed in an updatable datum.
 
 The script is also registered at initialization,
 to enable potential subsequent reward account withdrawals.
