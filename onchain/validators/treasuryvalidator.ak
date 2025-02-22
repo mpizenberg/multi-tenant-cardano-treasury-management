@@ -28,6 +28,8 @@ pub type SpendRedeemer {
   /// The list may contain variants granting the same permissions,
   /// so their count is not sufficient to check for all owners credentials.
   presented_badges: List<Badge>,
+  /// Index of the ref input containing the treasury root NFT.
+  root_ref_index: Int,
   /// Index of the input being spent.
   spent_input_index: Int,
   /// Index of the next output to be created.
@@ -118,6 +120,7 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
     datum: Option<treasury.SpendDatum>,
     SpendRedeemer {
       presented_badges,
+      root_ref_index,
       spent_input_index,
       next_output_index,
       action_type,
@@ -126,8 +129,25 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
     utxo: OutputReference,
     tx: Transaction,
   ) {
-    // Check that all presented badges are valid
+    // Check that all presented badges are valid.
+    // Does not check that the badge is owned by the scope owner,
+    // just that the presented credentials are indeed verified in the Tx.
     list.for_each(presented_badges, check_badge(tx, _))
+
+    // Retrieve the consumed output
+    expect Some(Input { output_reference, output: spent_output }) =
+      list.at(tx.inputs, spent_input_index)
+    expect output_reference == utxo
+
+    // Retrieve the script hash of the treasury validator
+    expect Script(script_hash) = spent_output.address.payment_credential
+
+    // Retrieve scope owners credentials from the treasury root.
+    // TODO: complete credentials check, move it to the withdraw validator
+    expect Some(Input { output: root_output, .. }) =
+      list.at(tx.reference_inputs, root_ref_index)
+    expect
+      assets.quantity_of(root_output.value, script_hash, env.root_asset_name) == 1
 
     // Keep scope owners having presented a badge.
     let active_scope_owners =
@@ -148,11 +168,6 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
           // After repeated contestations, the threshold is enough to unblock the situation.
           todo @"recover the funds"
         Some(old_datum) -> {
-          // Retrieve the consumed output
-          expect Some(Input { output_reference, output: spent_output }) =
-            list.at(tx.inputs, spent_input_index)
-          expect output_reference == utxo
-
           // Make sure the new utxo stays at the same address
           expect Some(Output {
             address,
