@@ -1,16 +1,16 @@
-use aiken/builtin
 use aiken/collection/dict
 use aiken/collection/list
+use aiken/collection/pairs
 use aiken/crypto.{Blake2b_256, Hash}
 use aiken/primitive/string
-use cardano/address.{Credential, Script, VerificationKey}
+use cardano/address.{Credential, Script}
 use cardano/assets.{AssetName, PolicyId, Value}
 use cardano/certificate.{Certificate, RegisterCredential, UnregisterCredential}
 use cardano/governance.{ProposalProcedure, Voter}
 use cardano/transaction.{
   InlineDatum, Input, Output, OutputReference, Transaction,
 }
-use cred.{Badge, KeySignature, ScriptWithdrawal, TokenProof}
+use cred.{Badge}
 use env
 use treasury
 
@@ -19,6 +19,26 @@ use treasury
 pub type InitialMintRedeemer {
   scopes: List<treasury.Scope>,
   register_cert_index: Int,
+}
+
+pub type WithdrawRedeemer {
+  /// Index of the ref input containing the treasury root NFT.
+  root_ref_index: Int,
+  /// Action to be performed.
+  action_type: WithdrawActionType,
+}
+
+pub type WithdrawActionType {
+  FundingViaWithdrawal(List<ScopeFunding>)
+}
+
+pub type ScopeFunding {
+  /// Index of the spent input for the scope UTxO
+  spent_index: Int,
+  /// Index of the newly created output for the scope UTxO
+  new_output_index: Int,
+  /// Badge specifying how to check the owner's credentials.
+  badge: Badge,
 }
 
 // Spending ----------------------------------------------------------
@@ -37,10 +57,10 @@ pub type SpendRedeemer {
   /// Rationale for the action.
   rationale: Rationale,
   /// Action to be performed.
-  action_type: ActionType,
+  action_type: SpendActionType,
 }
 
-pub type ActionType {
+pub type SpendActionType {
   /// Normal spending.
   Spend(treasury.Spending)
   /// Start recovering funds with a contestation period.
@@ -72,6 +92,7 @@ type ContestationDatum {
 
 /// Apply a function to the zipped list created from the two lists.
 fn for_each_2(l1: List<a>, l2: List<b>, do: fn(a, b) -> Void) {
+  // TODO: optimize this function
   let zipped = list.zip(l1, l2)
   list.for_each(zipped, fn((x1, x2)) { do(x1, x2) })
 }
@@ -132,7 +153,7 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
     // Check that all presented badges are valid.
     // Does not check that the badge is owned by the scope owner,
     // just that the presented credentials are indeed verified in the Tx.
-    list.for_each(presented_badges, check_badge(tx, _))
+    list.for_each(presented_badges, cred.check_badge_validity(tx, _))
 
     // Retrieve the consumed output
     expect Some(Input { output_reference, output: spent_output }) =
@@ -228,8 +249,84 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
     }
   }
 
-  withdraw(_redeemer: Data, _account: Credential, _tx: Transaction) {
-    todo @"withdraw logic goes here"
+  withdraw(
+    WithdrawRedeemer { root_ref_index, action_type }: WithdrawRedeemer,
+    account: Credential,
+    tx: Transaction,
+  ) {
+    // Retrieve the script hash
+    expect Script(script_hash) = account
+
+    // Retrieve the root treasury utxo containing the root NFT
+    expect Some(Input { output: root_output, .. }) =
+      list.at(tx.reference_inputs, root_ref_index)
+    expect
+      assets.quantity_of(root_output.value, script_hash, env.root_asset_name) == 1
+
+    // Retrieve the lovelace amount withdrawn
+    expect Some(withdrawn_amount) = pairs.get_first(tx.withdrawals, account)
+
+    when action_type is {
+      FundingViaWithdrawal(scope_fundings) -> {
+        // Retrieve the list of scope names from the root datum
+        expect InlineDatum(root_datum) = root_output.datum
+        expect scope_names: List<String> = root_datum
+
+        // Check that all scope owners have signed the transaction
+        // Also compute the ada amount sent to each scope
+        expect list.length(scope_fundings) == list.length(scope_names)
+        let fundings_per_scope: List<Int> = {
+          let scope_name, funding <- list.map2(scope_names, scope_fundings)
+          let ScopeFunding { spent_index, new_output_index, badge } = funding
+
+          // Check that the utxo at the spent index contains the scope nft (check asset name)
+          expect Some(Input { output: scope_output, .. }) =
+            list.at(tx.inputs, spent_index)
+          let asset_name = string.to_bytearray(scope_name)
+          expect
+            assets.quantity_of(scope_output.value, script_hash, asset_name) == 1
+
+          // Check that the utxo at the spent index is at the script address
+          expect Script(scope_cred) = scope_output.address.payment_credential
+          expect scope_cred == script_hash
+
+          // Extract the scope owner cred from that utxo datum
+          expect InlineDatum(scope_datum) = scope_output.datum
+          expect treasury.SpendDatum { scope, .. } = scope_datum
+
+          // Check that the presented badge is valid and matches the scope owner credential
+          cred.check_badge_validity(tx, badge)
+          expect cred.badge_matches_owner(scope.owner, badge)
+
+          // Retrieve the new scope output
+          expect Some(new_scope_output) = list.at(tx.outputs, new_output_index)
+
+          // Check that the address stays the same
+          expect new_scope_output.address == scope_output.address
+
+          // Check that the new datum points to the old scope UTxO
+          expect InlineDatum(new_scope_datum) = new_scope_output.datum
+          expect treasury.SpendDatum { previous_input_index, scope: new_scope } =
+            new_scope_datum
+          expect previous_input_index == Some(spent_index)
+
+          // Check that the new datum preserves the scope
+          expect new_scope == scope
+
+          // Check that there is no ref script
+          expect new_scope_output.reference_script == None
+
+          // Compute the value difference (must only be Ada)
+          expect assets.match(new_scope_output.value, scope_output.value, >=)
+          let previous_ada = assets.lovelace_of(scope_output.value)
+          let new_ada = assets.lovelace_of(new_scope_output.value)
+          new_ada - previous_ada
+        }
+        // Check that the withdrawn amount corresponds to the value difference
+        let scope_value_diff = list.foldl(fundings_per_scope, 0, +)
+        scope_value_diff == withdrawn_amount
+      }
+    }
   }
 
   publish(_redeemer: Data, certificate: Certificate, tx: Transaction) {
@@ -266,58 +363,6 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
   // // You will also need an additional import:
   // //
   // // use cardano/script_context.{ScriptContext}
-}
-
-/// Check that all presented badges are valid.
-/// Doesn’t check that they are also part of the scope owners, just valid.
-fn check_badge(tx: Transaction, badge: Badge) {
-  // The following code is checked for each badge
-  when badge is {
-    KeySignature { token, key } -> {
-      // Check that the key signature is present
-      expect list.has(tx.extra_signatories, key)
-      // When a token is presented, check its legitimacy
-      when token is {
-        None -> Void
-        Some(token_proof) -> {
-          let cred <- check_token_legitimacy(tx, token_proof)
-          cred == VerificationKey(key)
-        }
-      }
-    }
-    ScriptWithdrawal { token, script_hash, withdrawal_index } -> {
-      // Check that the script withdrawal is legitimate to validate the script
-      expect Some(withdrawal) = list.at(tx.withdrawals, withdrawal_index)
-      expect Script(withdrawal_script_hash) = builtin.fst_pair(withdrawal)
-      expect withdrawal_script_hash == script_hash
-      // When a token is presented, check its legitimacy
-      when token is {
-        None -> Void
-        Some(token_proof) -> {
-          let cred <- check_token_legitimacy(tx, token_proof)
-          cred == Script(script_hash)
-        }
-      }
-    }
-  }
-}
-
-/// Check that the token is legitimate:
-/// - located in the advertised reference input
-/// - with the correct policy ID
-/// - owned by the advertised credential
-fn check_token_legitimacy(
-  tx: Transaction,
-  token: TokenProof,
-  check_payment_cred: fn(Credential) -> Bool,
-) -> Void {
-  // Extract the ref input at the given index
-  expect Some(Input { output, .. }) =
-    list.at(tx.reference_inputs, token.ref_input_index)
-  // Check that the ref input contains the token
-  expect list.has(assets.policies(output.value), token.policy_id)
-  // Check that the ref input is owned by the correct credential
-  expect check_payment_cred(output.address.payment_credential)
 }
 
 /// Convert a list of assets into a Value.

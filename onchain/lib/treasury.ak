@@ -16,7 +16,7 @@ pub type SpendDatum {
 
 /// One scope of the multi-tenant treasury
 pub type Scope {
-  // TODO: probably possible to remove name
+  // TODO: probably possible to remove name?
   name: String,
   owner: ScopeOwnerCred,
   budget_configs: List<(PolicyId, List<(AssetName, BudgetConfig)>)>,
