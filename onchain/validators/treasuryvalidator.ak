@@ -29,16 +29,20 @@ pub type WithdrawRedeemer {
 }
 
 pub type WithdrawActionType {
-  FundingViaWithdrawal(List<ScopeFunding>)
+  FundingViaWithdrawal(List<ScopeAuth>)
+  CheckBadges(List<ScopeAuth>)
 }
 
-pub type ScopeFunding {
-  /// Index of the spent input for the scope UTxO
-  spent_index: Int,
-  /// Index of the newly created output for the scope UTxO
-  new_output_index: Int,
-  /// Badge specifying how to check the owner's credentials.
+/// Authentication data for a scope UTxO.
+/// This can either be for a scope UTxO being spent or referenced.
+/// When the new output is "None", we consider the input
+pub type ScopeAuth {
+  /// Badge specifying how to check the scope owner's credentials.
   badge: Badge,
+  /// Index of the input (spent or ref) for the scope UTxO
+  input_index: Int,
+  /// If spent, index of the newly created output for the scope UTxO
+  output_index: Option<Int>,
 }
 
 // Spending ----------------------------------------------------------
@@ -70,22 +74,6 @@ pub type SpendActionType {
 pub type Rationale {
   url: String,
   hash: Hash<Blake2b_256, ByteArray>,
-}
-
-// Recovery ----------------------------------------------------------
-
-type RecoveryDatum {
-  /// Index of the previous input being spent.
-  previous_input_index: Int,
-  /// Counter for the number of times the recovery process was contested.
-  contestation_count: Int,
-}
-
-type ContestationDatum {
-  /// Index of the previous input being spent.
-  previous_input_index: Int,
-  /// Counter for the number of times the recovery process was contested.
-  contestation_count: Int,
 }
 
 // Validator ---------------------------------------------------------
@@ -267,17 +255,21 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
     expect Some(withdrawn_amount) = pairs.get_first(tx.withdrawals, account)
 
     when action_type is {
-      FundingViaWithdrawal(scope_fundings) -> {
+      FundingViaWithdrawal(scope_auths) -> {
         // Retrieve the list of scope names from the root datum
         expect InlineDatum(root_datum) = root_output.datum
         expect scope_names: List<String> = root_datum
 
         // Check that all scope owners have signed the transaction
         // Also compute the ada amount sent to each scope
-        expect list.length(scope_fundings) == list.length(scope_names)
+        expect list.length(scope_auths) == list.length(scope_names)
         let fundings_per_scope: List<Int> = {
-          let scope_name, funding <- list.map2(scope_names, scope_fundings)
-          let ScopeFunding { spent_index, new_output_index, badge } = funding
+          let scope_name, auth <- list.map2(scope_names, scope_auths)
+          expect ScopeAuth {
+            input_index: spent_index,
+            output_index: Some(new_output_index),
+            badge,
+          } = auth
 
           // Check that the utxo at the spent index contains the scope nft (check asset name)
           expect Some(Input { output: scope_output, .. }) =
@@ -326,6 +318,7 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
         let scope_value_diff = list.foldl(fundings_per_scope, 0, +)
         scope_value_diff == withdrawn_amount
       }
+      CheckBadges(badges) -> todo @"check badges"
     }
   }
 
