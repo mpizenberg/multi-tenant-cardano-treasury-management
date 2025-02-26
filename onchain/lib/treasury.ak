@@ -1,10 +1,11 @@
 use aiken/collection/list
+use aiken/crypto.{ScriptHash}
 use aiken/interval.{Finite, Interval, IntervalBound}
 use aiken/primitive/string
 use cardano/address.{Script}
 use cardano/assets.{AssetName, PolicyId}
-use cardano/transaction.{InlineDatum, Output, ValidityRange}
-use cred.{ScopeOwnerCred}
+use cardano/transaction.{InlineDatum, Input, Output, Transaction, ValidityRange}
+use cred.{Badge, ScopeOwnerCred}
 use env
 
 // Treasury
@@ -44,6 +45,21 @@ pub type Withdrawal {
 pub type FiniteValidityRange {
   lower_bound: Int,
   upper_bound: Int,
+}
+
+/// Authentication data for a scope UTxO.
+/// This can either be for a scope UTxO being spent or referenced.
+/// When the new output is "None", we consider the input
+pub type ScopeAuth {
+  /// Badge specifying how to check the scope owner's credentials.
+  badge: Badge,
+  /// Index of the input (spent or ref) for the scope UTxO
+  scope_input_index: InputIndex,
+}
+
+pub type InputIndex {
+  SpentIndex(Int)
+  RefIndex(Int)
 }
 
 // Initialization
@@ -99,6 +115,49 @@ pub fn validate_scope_initialization(
   expect SpendDatum { previous_input_index, scope: datum_scope } = data
   expect previous_input_index == None
   expect datum_scope == scope
+}
+
+// Checking authentication
+
+/// Check that the provided badge is valid and matches the corresponding scope credential.
+/// If credential is OK, call a continuation function with further checks,
+/// with the scope output and scope value as parameters.
+///
+/// Remark: the scope output would have been enough,
+/// but we also provide the scope itself to avoid the caller to have to extract it again.
+pub fn check_auth(
+  auth: ScopeAuth,
+  tx: Transaction,
+  script_hash: ScriptHash,
+  further_checks: fn(Output, Scope) -> a,
+) -> a {
+  let ScopeAuth { badge, scope_input_index } = auth
+
+  // Extract the output for the UTxO at the input index
+  expect Some(Input { output: scope_output, .. }) =
+    when scope_input_index is {
+      RefIndex(idx) -> list.at(tx.reference_inputs, idx)
+      SpentIndex(idx) -> list.at(tx.inputs, idx)
+    }
+
+  // Check that the utxo at the input index is at the script address
+  expect Script(scope_cred) = scope_output.address.payment_credential
+  expect scope_cred == script_hash
+
+  // Extract the scope owner cred from that utxo datum
+  expect InlineDatum(scope_datum) = scope_output.datum
+  expect SpendDatum { scope, .. } = scope_datum
+
+  // Check that the utxo at the input index contains the scope nft (check asset name)
+  let asset_name = string.to_bytearray(scope.name)
+  expect assets.quantity_of(scope_output.value, script_hash, asset_name) == 1
+
+  // Check that the presented badge is valid and matches the scope owner credential
+  cred.check_badge_validity(tx, badge)
+  expect cred.badge_matches_owner(scope.owner, badge)
+
+  // Call the continuation function
+  further_checks(scope_output, scope)
 }
 
 // Actions

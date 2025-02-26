@@ -12,7 +12,7 @@ use cardano/transaction.{
 }
 use cred.{Badge}
 use env
-use treasury
+use treasury.{SpentIndex}
 
 // Initialization ----------------------------------------------------
 
@@ -29,20 +29,8 @@ pub type WithdrawRedeemer {
 }
 
 pub type WithdrawActionType {
-  FundingViaWithdrawal(List<ScopeAuth>)
-  CheckBadges(List<ScopeAuth>)
-}
-
-/// Authentication data for a scope UTxO.
-/// This can either be for a scope UTxO being spent or referenced.
-/// When the new output is "None", we consider the input
-pub type ScopeAuth {
-  /// Badge specifying how to check the scope owner's credentials.
-  badge: Badge,
-  /// Index of the input (spent or ref) for the scope UTxO
-  input_index: Int,
-  /// If spent, index of the newly created output for the scope UTxO
-  output_index: Option<Int>,
+  FundingViaWithdrawal(List<(treasury.ScopeAuth, Int)>)
+  CheckBadges(List<treasury.ScopeAuth>)
 }
 
 // Spending ----------------------------------------------------------
@@ -254,53 +242,37 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
     // Retrieve the lovelace amount withdrawn
     expect Some(withdrawn_amount) = pairs.get_first(tx.withdrawals, account)
 
+    // Retrieve the list of scope names from the root datum
+    expect InlineDatum(root_datum) = root_output.datum
+    expect scope_names: List<String> = root_datum
+
     when action_type is {
       FundingViaWithdrawal(scope_auths) -> {
-        // Retrieve the list of scope names from the root datum
-        expect InlineDatum(root_datum) = root_output.datum
-        expect scope_names: List<String> = root_datum
-
         // Check that all scope owners have signed the transaction
         // Also compute the ada amount sent to each scope
         expect list.length(scope_auths) == list.length(scope_names)
         let fundings_per_scope: List<Int> = {
-          let scope_name, auth <- list.map2(scope_names, scope_auths)
-          expect ScopeAuth {
-            input_index: spent_index,
-            output_index: Some(new_output_index),
-            badge,
-          } = auth
+          let
+            scope_name,
+            (auth, output_index),
+          <- list.map2(scope_names, scope_auths)
 
-          // Check that the utxo at the spent index contains the scope nft (check asset name)
-          expect Some(Input { output: scope_output, .. }) =
-            list.at(tx.inputs, spent_index)
-          let asset_name = string.to_bytearray(scope_name)
-          expect
-            assets.quantity_of(scope_output.value, script_hash, asset_name) == 1
+          // Check auth validity
+          let scope_output, scope <- treasury.check_auth(auth, tx, script_hash)
 
-          // Check that the utxo at the spent index is at the script address
-          expect Script(scope_cred) = scope_output.address.payment_credential
-          expect scope_cred == script_hash
-
-          // Extract the scope owner cred from that utxo datum
-          expect InlineDatum(scope_datum) = scope_output.datum
-          expect treasury.SpendDatum { scope, .. } = scope_datum
-
-          // Check that the presented badge is valid and matches the scope owner credential
-          cred.check_badge_validity(tx, badge)
-          expect cred.badge_matches_owner(scope.owner, badge)
-
-          // Retrieve the new scope output
-          expect Some(new_scope_output) = list.at(tx.outputs, new_output_index)
+          // Check that the scope has the correct name
+          expect scope_name == scope.name
 
           // Check that the address stays the same
+          expect Some(new_scope_output) = list.at(tx.outputs, output_index)
           expect new_scope_output.address == scope_output.address
 
           // Check that the new datum points to the old scope UTxO
           expect InlineDatum(new_scope_datum) = new_scope_output.datum
           expect treasury.SpendDatum { previous_input_index, scope: new_scope } =
             new_scope_datum
-          expect previous_input_index == Some(spent_index)
+          expect SpentIndex(scope_input_index) = auth.scope_input_index
+          expect previous_input_index == Some(scope_input_index)
 
           // Check that the new datum preserves the scope
           expect new_scope == scope
@@ -318,7 +290,14 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
         let scope_value_diff = list.foldl(fundings_per_scope, 0, +)
         scope_value_diff == withdrawn_amount
       }
-      CheckBadges(badges) -> todo @"check badges"
+      CheckBadges(scope_auths) -> {
+        {
+          let auth <- list.for_each(scope_auths)
+          let _, _ <- treasury.check_auth(auth, tx, script_hash)
+          Void
+        }
+        True
+      }
     }
   }
 
