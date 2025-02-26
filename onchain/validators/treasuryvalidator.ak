@@ -303,27 +303,23 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
 
   publish(_redeemer: Data, certificate: Certificate, tx: Transaction) {
     when certificate is {
-      RegisterCredential { .. } -> {
+      RegisterCredential { .. } ->
         // Registering can only be done at initialization
-        expect
-          list.any(
-            tx.inputs,
-            fn(input) { input.output_reference == initialization_utxo_ref },
-          )
-      }
-      UnregisterCredential { .. } -> todo @"other publish logic goes here"
-      _ -> todo @"unregister when the treasury is closed or its address changes"
+        list.any(
+          tx.inputs,
+          fn(input) { input.output_reference == initialization_utxo_ref },
+        )
+      UnregisterCredential { .. } -> todo @"check that the root NFT is burned"
+      _ -> False
     }
-
-    todo @"publish logic goes here"
   }
 
   vote(_redeemer: Data, _voter: Voter, _tx: Transaction) {
-    todo @"vote logic goes here"
+    False
   }
 
   propose(_redeemer: Data, _proposal: ProposalProcedure, _tx: Transaction) {
-    todo @"propose logic goes here"
+    False
   }
 
   // // If needs be, remove any of unneeded handlers above, and use:
