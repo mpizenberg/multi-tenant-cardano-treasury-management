@@ -2,7 +2,6 @@ use aiken/collection/dict
 use aiken/collection/list
 use aiken/collection/pairs
 use aiken/crypto.{Blake2b_256, Hash}
-use aiken/primitive/string
 use cardano/address.{Credential, Script}
 use cardano/assets.{AssetName, PolicyId, Value}
 use cardano/certificate.{Certificate, RegisterCredential, UnregisterCredential}
@@ -60,7 +59,7 @@ pub type SpendActionType {
 }
 
 pub type Rationale {
-  url: String,
+  url: ByteArray,
   hash: Hash<Blake2b_256, ByteArray>,
 }
 
@@ -108,7 +107,7 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
     let just_root = dict.insert(dict.empty, env.root_asset_name, 1)
     let expected_mint = {
       let scope_name, dict_acc <- list.foldl(scope_names, just_root)
-      dict.insert(dict_acc, string.to_bytearray(scope_name), 1)
+      dict.insert(dict_acc, scope_name, 1)
     }
     minted == expected_mint
   }
@@ -244,7 +243,7 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
 
     // Retrieve the list of scope names from the root datum
     expect InlineDatum(root_datum) = root_output.datum
-    expect scope_names: List<String> = root_datum
+    expect scope_names: List<ByteArray> = root_datum
 
     when action_type is {
       FundingViaWithdrawal(scope_auths) -> {

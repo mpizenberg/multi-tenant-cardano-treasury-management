@@ -1,7 +1,6 @@
 use aiken/collection/list
 use aiken/crypto.{ScriptHash}
 use aiken/interval.{Finite, Interval, IntervalBound}
-use aiken/primitive/string
 use cardano/address.{Script}
 use cardano/assets.{AssetName, PolicyId}
 use cardano/transaction.{InlineDatum, Input, Output, Transaction, ValidityRange}
@@ -18,7 +17,7 @@ pub type SpendDatum {
 /// One scope of the multi-tenant treasury
 pub type Scope {
   // TODO: probably possible to remove name?
-  name: String,
+  name: ByteArray,
   owner: ScopeOwnerCred,
   budget_configs: List<(PolicyId, List<(AssetName, BudgetConfig)>)>,
 }
@@ -67,7 +66,7 @@ pub type InputIndex {
 /// Check that the output containing the root treasury NFT
 /// at the treasury initialization is valid.
 pub fn validate_root_output(
-  scope_names: List<String>,
+  scope_names: List<ByteArray>,
   output: Output,
   policy_id: PolicyId,
 ) {
@@ -109,7 +108,7 @@ pub fn validate_scope_initialization(
   // Check that the output contains only some ada and the NFT for the scope
   let expected_value =
     assets.from_lovelace(env.scope_min_ada)
-      |> assets.add(policy_id, string.to_bytearray(scope.name), 1)
+      |> assets.add(policy_id, scope.name, 1)
   expect output.value == expected_value
 
   // Check that the datum is exactly this scope
@@ -151,7 +150,7 @@ pub fn check_auth(
   expect SpendDatum { scope, .. } = scope_datum
 
   // Check that the utxo at the input index contains the scope nft (check asset name)
-  let asset_name = string.to_bytearray(scope.name)
+  let asset_name = scope.name
   expect assets.quantity_of(scope_output.value, script_hash, asset_name) == 1
 
   // Check that the presented badge is valid and matches the scope owner credential
