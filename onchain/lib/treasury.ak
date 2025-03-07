@@ -91,6 +91,8 @@ pub fn validate_root_output(
   expect scope_names_as_data == data
 }
 
+/// Check that the output containing this scope NFT
+/// at the treasury initialization is valid.
 pub fn validate_scope_initialization(
   scope: Scope,
   output: Output,
@@ -112,10 +114,9 @@ pub fn validate_scope_initialization(
   expect output.value == expected_value
 
   // Check that the datum is exactly this scope
+  let scope_as_datum: Data = SpendDatum { previous_input_index: None, scope }
   expect InlineDatum(data) = output.datum
-  expect SpendDatum { previous_input_index, scope: datum_scope } = data
-  expect previous_input_index == None
-  expect datum_scope == scope
+  expect data == scope_as_datum
 }
 
 // Checking authentication
