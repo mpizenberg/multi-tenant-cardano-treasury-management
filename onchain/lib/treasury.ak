@@ -151,8 +151,7 @@ pub fn check_auth(
   expect SpendDatum { scope, .. } = scope_datum
 
   // Check that the utxo at the input index contains the scope nft (check asset name)
-  let asset_name = scope.name
-  expect assets.quantity_of(scope_output.value, script_hash, asset_name) == 1
+  expect assets.quantity_of(scope_output.value, script_hash, scope.name) == 1
 
   // Check that the presented badge is valid and matches the scope owner credential
   cred.check_badge_validity(tx, badge)

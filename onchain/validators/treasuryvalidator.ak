@@ -293,6 +293,10 @@ validator placeholder(initialization_utxo_ref: OutputReference) {
         {
           let auth <- list.for_each(scope_auths)
           let _, _ <- treasury.check_auth(auth, tx, script_hash)
+          // TODO: Maybe check that the scope name is in the official
+          // list of scope names?
+          // In theory it’s not necessary because it’s already checked
+          // to be the correct policy ID and a valid match of badge with scope.
           Void
         }
         True
