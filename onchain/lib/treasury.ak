@@ -64,6 +64,8 @@ pub type InputIndex {
 
 // Initialization
 
+/// Check that the output containing the root treasury NFT
+/// at the treasury initialization is valid.
 pub fn validate_root_output(
   scope_names: List<String>,
   output: Output,
@@ -86,8 +88,8 @@ pub fn validate_root_output(
 
   // Check that the datum contains the scope names
   expect InlineDatum(data) = output.datum
-  expect datum_scopes_names: List<String> = data
-  expect datum_scopes_names == scope_names
+  let scope_names_as_data: Data = scope_names
+  expect scope_names_as_data == data
 }
 
 pub fn validate_scope_initialization(
