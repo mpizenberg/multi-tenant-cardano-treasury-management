@@ -1,14 +1,18 @@
-port module Main exposing (..)
+port module Main exposing (main)
 
 import Browser
 import Bytes.Comparable as Bytes exposing (Bytes)
-import Cardano.Address as Address exposing (Address)
+import Cardano.Address as Address exposing (Address, Credential(..), CredentialHash, NetworkId(..))
 import Cardano.Cip30 as Cip30
-import Cardano.Utxo exposing (Output, OutputReference)
+import Cardano.Script as Script exposing (PlutusVersion(..), ScriptCbor)
+import Cardano.Uplc as Uplc
+import Cardano.Utxo as Utxo exposing (Output, OutputReference)
+import Dict.Any
 import Html exposing (Html, button, div, text)
-import Html.Attributes exposing (height, src)
-import Html.Events exposing (onClick)
-import Json.Decode as JDecode exposing (Value)
+import Html.Attributes as HA exposing (height, src)
+import Html.Events as HE exposing (onClick)
+import Http
+import Json.Decode as JD exposing (Decoder, Value)
 
 
 main =
@@ -29,13 +33,10 @@ port toWallet : Value -> Cmd msg
 port fromWallet : (Value -> msg) -> Sub msg
 
 
-type Msg
-    = WalletMsg Value
-    | ConnectButtonClicked { id : String }
 
-
-
+-- #########################################################
 -- MODEL
+-- #########################################################
 
 
 type Model
@@ -43,13 +44,37 @@ type Model
     | WalletDiscovered (List Cip30.WalletDescriptor)
     | WalletLoading
         { wallet : Cip30.Wallet
-        , utxos : List ( OutputReference, Output )
+        , utxos : List Cip30.Utxo
         }
-    | WalletLoaded
-        { wallet : Cip30.Wallet
-        , utxos : List ( OutputReference, Output )
-        , changeAddress : Address
-        }
+    | WalletLoaded LoadedWallet { errors : String }
+    | BlueprintLoaded LoadedWallet UnappliedScript { errors : String }
+    | ParametersSet AppContext { errors : String }
+
+
+type alias LoadedWallet =
+    { wallet : Cip30.Wallet
+    , utxos : Utxo.RefDict Output
+    , changeAddress : Address
+    }
+
+
+type alias UnappliedScript =
+    { compiledCode : Bytes ScriptCbor }
+
+
+type alias TreasuryScript =
+    { hash : Bytes CredentialHash
+    , compiledCode : Bytes ScriptCbor
+    }
+
+
+type alias AppContext =
+    { loadedWallet : LoadedWallet
+    , pickedUtxo : OutputReference
+    , localStateUtxos : Utxo.RefDict Output
+    , treasuryScript : TreasuryScript
+    , scriptAddress : Address
+    }
 
 
 init : () -> ( Model, Cmd Msg )
@@ -59,15 +84,46 @@ init _ =
     )
 
 
+addError : String -> Model -> Model
+addError e model =
+    let
+        _ =
+            Debug.log "ERROR" e
+    in
+    case model of
+        WalletLoaded loadedWallet { errors } ->
+            WalletLoaded loadedWallet { errors = errors ++ ", " ++ e }
 
+        BlueprintLoaded loadedWallet unappliedScript { errors } ->
+            BlueprintLoaded loadedWallet unappliedScript { errors = errors ++ ", " ++ e }
+
+        ParametersSet appContext { errors } ->
+            ParametersSet appContext { errors = errors ++ ", " ++ e }
+
+        _ ->
+            model
+
+
+
+-- #########################################################
 -- UPDATE
+-- #########################################################
+
+
+type Msg
+    = WalletMsg Value
+    | ConnectButtonClicked { id : String }
+    | LoadBlueprintButtonClicked
+    | GotBlueprint (Result Http.Error UnappliedScript)
+    | PickUtxoParam
+    | InitializeTreasuryButtonClicked
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case ( msg, model ) of
         ( WalletMsg value, _ ) ->
-            case ( JDecode.decodeValue Cip30.responseDecoder value, model ) of
+            case ( JD.decodeValue Cip30.responseDecoder value, model ) of
                 -- We just discovered available wallets
                 ( Ok (Cip30.AvailableWallets wallets), Startup ) ->
                     ( WalletDiscovered wallets, Cmd.none )
@@ -79,28 +135,107 @@ update msg model =
                     )
 
                 -- We just received the utxos, let’s ask for the main change address of the wallet
-                ( Ok (Cip30.ApiResponse { walletId } (Cip30.WalletUtxos utxos)), WalletLoading { wallet } ) ->
+                ( Ok (Cip30.ApiResponse _ (Cip30.WalletUtxos utxos)), WalletLoading { wallet } ) ->
                     ( WalletLoading { wallet = wallet, utxos = utxos }
                     , toWallet (Cip30.encodeRequest (Cip30.getChangeAddress wallet))
                     )
 
-                ( Ok (Cip30.ApiResponse { walletId } (Cip30.ChangeAddress address)), WalletLoading { wallet, utxos } ) ->
-                    ( WalletLoaded { wallet = wallet, utxos = utxos, changeAddress = address }
+                ( Ok (Cip30.ApiResponse _ (Cip30.ChangeAddress address)), WalletLoading { wallet, utxos } ) ->
+                    ( WalletLoaded { wallet = wallet, utxos = Utxo.refDictFromList utxos, changeAddress = address } { errors = "" }
                     , Cmd.none
                     )
+
+                ( Ok (Cip30.ApiError { info }), m ) ->
+                    ( addError info m, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
 
-        ( ConnectButtonClicked { id }, WalletDiscovered descriptors ) ->
+        ( ConnectButtonClicked { id }, WalletDiscovered _ ) ->
             ( model, toWallet (Cip30.encodeRequest (Cip30.enableWallet { id = id, extensions = [] })) )
+
+        ( LoadBlueprintButtonClicked, WalletLoaded _ _ ) ->
+            ( model
+            , let
+                blueprintDecoder : Decoder UnappliedScript
+                blueprintDecoder =
+                    JD.at [ "validators" ]
+                        (JD.index 0
+                            (JD.map UnappliedScript
+                                (JD.field "compiledCode" JD.string |> JD.map Bytes.fromHexUnchecked)
+                            )
+                        )
+              in
+              Http.get
+                { url = "plutus.json"
+                , expect = Http.expectJson GotBlueprint blueprintDecoder
+                }
+            )
+
+        ( GotBlueprint result, WalletLoaded w _ ) ->
+            case result of
+                Ok unappliedScript ->
+                    ( BlueprintLoaded w unappliedScript { errors = "" }, Cmd.none )
+
+                Err err ->
+                    -- Handle error as needed
+                    ( WalletLoaded w { errors = Debug.toString err }, Cmd.none )
+
+        ( PickUtxoParam, BlueprintLoaded w unappliedScript { errors } ) ->
+            case List.head (Dict.Any.keys w.utxos) of
+                Just headUtxo ->
+                    let
+                        appliedScriptRes =
+                            Uplc.applyParamsToScript
+                                [ Utxo.outputReferenceToData headUtxo ]
+                                (Script.plutusScriptFromBytes PlutusV3 unappliedScript.compiledCode)
+                    in
+                    case appliedScriptRes of
+                        Ok plutusScript ->
+                            let
+                                hash =
+                                    Script.hash (Script.Plutus plutusScript)
+                            in
+                            ( ParametersSet
+                                { loadedWallet = w
+                                , pickedUtxo = headUtxo
+                                , localStateUtxos = w.utxos
+                                , treasuryScript =
+                                    { hash = hash
+                                    , compiledCode = Script.cborWrappedBytes plutusScript
+                                    }
+                                , scriptAddress =
+                                    Address.Shelley
+                                        { networkId = Address.extractNetworkId w.changeAddress |> Maybe.withDefault Testnet
+                                        , paymentCredential = ScriptHash hash
+                                        , stakeCredential = Nothing
+                                        }
+                                }
+                                { errors = errors }
+                            , Cmd.none
+                            )
+
+                        Err err ->
+                            ( BlueprintLoaded w unappliedScript { errors = Debug.toString err }
+                            , Cmd.none
+                            )
+
+                Nothing ->
+                    ( BlueprintLoaded w unappliedScript { errors = "Selected wallet has no UTxO." }
+                    , Cmd.none
+                    )
+
+        ( InitializeTreasuryButtonClicked, ParametersSet _ _ ) ->
+            Debug.todo ""
 
         _ ->
             ( model, Cmd.none )
 
 
 
+-- #########################################################
 -- VIEW
+-- #########################################################
 
 
 view : Model -> Html Msg
@@ -119,12 +254,50 @@ view model =
         WalletLoading _ ->
             div [] [ text "Loading wallet assets ..." ]
 
-        WalletLoaded { wallet, utxos, changeAddress } ->
+        WalletLoaded loadedWallet { errors } ->
             div []
-                [ div [] [ text <| "Wallet: " ++ (Cip30.walletDescriptor wallet).name ]
-                , div [] [ text <| "Address: " ++ (Address.toBytes changeAddress |> Bytes.toHex) ]
-                , div [] [ text <| "UTxO count: " ++ String.fromInt (List.length utxos) ]
-                ]
+                (viewLoadedWallet loadedWallet
+                    ++ [ button [ onClick LoadBlueprintButtonClicked ] [ text "Load Blueprint" ]
+                       , displayErrors errors
+                       ]
+                )
+
+        BlueprintLoaded loadedWallet unappliedScript { errors } ->
+            div []
+                (viewLoadedWallet loadedWallet
+                    ++ [ div [] [ text <| "Unapplied script size (bytes): " ++ String.fromInt (Bytes.width unappliedScript.compiledCode) ]
+                       , button [ HE.onClick PickUtxoParam ] [ text "Auto-pick UTxO to be spent for unicity guarantee of the Treasury contract" ]
+                       , displayErrors errors
+                       ]
+                )
+
+        ParametersSet ctx { errors } ->
+            div []
+                (viewLoadedWallet ctx.loadedWallet
+                    ++ [ div [] [ text <| "☑️ Picked UTxO: " ++ (ctx.pickedUtxo |> (\u -> Bytes.toHex u.transactionId ++ "#" ++ String.fromInt u.outputIndex)) ]
+                       , div [] [ text <| "Applied Script hash: " ++ Bytes.toHex ctx.treasuryScript.hash ]
+                       , div [] [ text <| "Applied Script size (bytes): " ++ String.fromInt (Bytes.width ctx.treasuryScript.compiledCode) ]
+                       , button [ onClick InitializeTreasuryButtonClicked ] [ text "Initialize the multi-tenant treasury" ]
+                       , displayErrors errors
+                       ]
+                )
+
+
+displayErrors : String -> Html msg
+displayErrors err =
+    if err == "" then
+        text ""
+
+    else
+        div [ HA.style "color" "red" ] [ Html.b [] [ text <| "ERRORS: " ], text err ]
+
+
+viewLoadedWallet : LoadedWallet -> List (Html msg)
+viewLoadedWallet { wallet, utxos, changeAddress } =
+    [ div [] [ text <| "Wallet: " ++ (Cip30.walletDescriptor wallet).name ]
+    , div [] [ text <| "Address: " ++ (Address.toBytes changeAddress |> Bytes.toHex) ]
+    , div [] [ text <| "UTxO count: " ++ String.fromInt (Dict.Any.size utxos) ]
+    ]
 
 
 viewAvailableWallets : List Cip30.WalletDescriptor -> Html Msg

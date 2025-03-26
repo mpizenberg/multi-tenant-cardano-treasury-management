@@ -5,3 +5,5 @@ elm-cardano.js
 pkg-uplc-wasm/
 elm-stuff/
 
+# Node stuff
+node_modules/

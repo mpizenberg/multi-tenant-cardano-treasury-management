@@ -1,0 +1,31 @@
+{
+  "name": "multi-tenant-cardano-treasury",
+  "version": "1.0.0",
+  "description": "Multi-tenant Cardano Treasury Dapp",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "make": "elm-cardano make src/Main.elm --output main.js",
+    "watch": "elm-watch hot",
+    "lint": "elm-review",
+    "lint:fix": "elm-review --fix",
+    "format": "elm-format src/",
+    "format:validate": "elm-format --validate src/",
+    "docs": "elm-doc-preview --port 8911"
+  },
+  "keywords": [
+    "Cardano"
+  ],
+  "license": "MPL-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@lydell/elm": "^0.19.1-14",
+    "elm-cardano": "^0.6.0",
+    "elm-doc-preview": "^6.0.1",
+    "elm-format": "^0.8.7",
+    "elm-review": "^2.13.2",
+    "elm-test": "^0.19.1-revision15",
+    "elm-watch": "^2.0.0-beta.6"
+  }
+}
