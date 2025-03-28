@@ -1,8 +1,10 @@
-module Cred exposing (Badge(..), ScopeOwnerCred(..), TokenProof)
+module Cred exposing (Badge(..), ScopeOwner(..), TokenProof, scopeOwnerToData)
 
-import Bytes.Comparable exposing (Bytes)
+import Bytes.Comparable as Bytes exposing (Bytes)
 import Cardano.Address exposing (CredentialHash)
+import Cardano.Data as Data exposing (Data)
 import Cardano.MultiAsset exposing (PolicyId)
+import Natural
 
 
 {-| Credential of one scope owner.
@@ -13,7 +15,7 @@ and prevents the need to change the treasury address when
 transferring ownership of one scope.
 
 -}
-type ScopeOwnerCred
+type ScopeOwner
     = KeyCred (Bytes CredentialHash)
     | ScriptCred (Bytes CredentialHash)
     | TokenCred (Bytes PolicyId)
@@ -48,3 +50,20 @@ type alias TokenProof =
     { policyId : Bytes PolicyId
     , refInputIndex : Int
     }
+
+
+
+-- Encoders
+
+
+scopeOwnerToData : ScopeOwner -> Data
+scopeOwnerToData scopeOwner =
+    case scopeOwner of
+        KeyCred hash ->
+            Data.Constr Natural.zero [ Data.Bytes <| Bytes.toAny hash ]
+
+        ScriptCred hash ->
+            Data.Constr Natural.one [ Data.Bytes <| Bytes.toAny hash ]
+
+        TokenCred policyId ->
+            Data.Constr Natural.two [ Data.Bytes <| Bytes.toAny policyId ]

@@ -2,17 +2,22 @@ port module Main exposing (main)
 
 import Browser
 import Bytes.Comparable as Bytes exposing (Bytes)
+import Cardano
 import Cardano.Address as Address exposing (Address, Credential(..), CredentialHash, NetworkId(..))
 import Cardano.Cip30 as Cip30
-import Cardano.Script as Script exposing (PlutusVersion(..), ScriptCbor)
+import Cardano.MultiAsset as MultiAsset
+import Cardano.Script as Script exposing (PlutusScript, PlutusVersion(..), ScriptCbor)
 import Cardano.Uplc as Uplc
 import Cardano.Utxo as Utxo exposing (Output, OutputReference)
+import Cred exposing (ScopeOwner(..))
 import Dict.Any
 import Html exposing (Html, button, div, text)
 import Html.Attributes as HA exposing (height, src)
 import Html.Events as HE exposing (onClick)
 import Http
 import Json.Decode as JD exposing (Decoder, Value)
+import Natural
+import Validator
 
 
 main =
@@ -62,17 +67,11 @@ type alias UnappliedScript =
     { compiledCode : Bytes ScriptCbor }
 
 
-type alias TreasuryScript =
-    { hash : Bytes CredentialHash
-    , compiledCode : Bytes ScriptCbor
-    }
-
-
 type alias AppContext =
     { loadedWallet : LoadedWallet
     , pickedUtxo : OutputReference
     , localStateUtxos : Utxo.RefDict Output
-    , treasuryScript : TreasuryScript
+    , treasuryScript : PlutusScript
     , scriptAddress : Address
     }
 
@@ -84,21 +83,21 @@ init _ =
     )
 
 
-addError : String -> Model -> Model
-addError e model =
+setError : String -> Model -> Model
+setError e model =
     let
         _ =
             Debug.log "ERROR" e
     in
     case model of
         WalletLoaded loadedWallet { errors } ->
-            WalletLoaded loadedWallet { errors = errors ++ ", " ++ e }
+            WalletLoaded loadedWallet { errors = e }
 
         BlueprintLoaded loadedWallet unappliedScript { errors } ->
-            BlueprintLoaded loadedWallet unappliedScript { errors = errors ++ ", " ++ e }
+            BlueprintLoaded loadedWallet unappliedScript { errors = e }
 
         ParametersSet appContext { errors } ->
-            ParametersSet appContext { errors = errors ++ ", " ++ e }
+            ParametersSet appContext { errors = e }
 
         _ ->
             model
@@ -146,7 +145,7 @@ update msg model =
                     )
 
                 ( Ok (Cip30.ApiError { info }), m ) ->
-                    ( addError info m, Cmd.none )
+                    ( setError info m, Cmd.none )
 
                 _ ->
                     ( model, Cmd.none )
@@ -192,22 +191,15 @@ update msg model =
                     in
                     case appliedScriptRes of
                         Ok plutusScript ->
-                            let
-                                hash =
-                                    Script.hash (Script.Plutus plutusScript)
-                            in
                             ( ParametersSet
                                 { loadedWallet = w
                                 , pickedUtxo = headUtxo
                                 , localStateUtxos = w.utxos
-                                , treasuryScript =
-                                    { hash = hash
-                                    , compiledCode = Script.cborWrappedBytes plutusScript
-                                    }
+                                , treasuryScript = plutusScript
                                 , scriptAddress =
                                     Address.Shelley
                                         { networkId = Address.extractNetworkId w.changeAddress |> Maybe.withDefault Testnet
-                                        , paymentCredential = ScriptHash hash
+                                        , paymentCredential = ScriptHash <| Script.hash (Script.Plutus plutusScript)
                                         , stakeCredential = Nothing
                                         }
                                 }
@@ -225,8 +217,43 @@ update msg model =
                     , Cmd.none
                     )
 
-        ( InitializeTreasuryButtonClicked, ParametersSet _ _ ) ->
-            Debug.todo ""
+        ( InitializeTreasuryButtonClicked, ParametersSet ctx _ ) ->
+            let
+                initializationTxIntents =
+                    Validator.initializeTreasury
+                        ctx.loadedWallet.changeAddress
+                        ctx.pickedUtxo
+                        ctx.treasuryScript
+                        scopes
+
+                scopes =
+                    [ { name = "Consensus"
+                      , owner =
+                            KeyCred <|
+                                Maybe.withDefault (Bytes.fromHexUnchecked "") <|
+                                    Address.extractPubKeyHash ctx.loadedWallet.changeAddress
+                      , adaBudgetConfig =
+                            { rollingNetLimitAmount =
+                                -- 100 ada
+                                Natural.fromSafeInt <| 100 * 1000000
+                            , rollingNetLimitDurationMilliseconds =
+                                -- 30 days
+                                Natural.fromSafeInt <| 1000 * 60 * 60 * 24 * 30
+                            , recentWithdrawals = []
+                            }
+                      , otherBudgetConfigs = MultiAsset.empty
+                      }
+                    ]
+
+                txResult =
+                    Cardano.finalize ctx.localStateUtxos [] initializationTxIntents
+            in
+            case txResult of
+                Ok { tx } ->
+                    Debug.todo ""
+
+                Err err ->
+                    ( setError (Debug.toString err) model, Cmd.none )
 
         _ ->
             ( model, Cmd.none )
@@ -272,11 +299,18 @@ view model =
                 )
 
         ParametersSet ctx { errors } ->
+            let
+                scriptHash =
+                    Script.hash <| Script.Plutus ctx.treasuryScript
+
+                scriptBytes =
+                    Script.cborWrappedBytes ctx.treasuryScript
+            in
             div []
                 (viewLoadedWallet ctx.loadedWallet
                     ++ [ div [] [ text <| "☑️ Picked UTxO: " ++ (ctx.pickedUtxo |> (\u -> Bytes.toHex u.transactionId ++ "#" ++ String.fromInt u.outputIndex)) ]
-                       , div [] [ text <| "Applied Script hash: " ++ Bytes.toHex ctx.treasuryScript.hash ]
-                       , div [] [ text <| "Applied Script size (bytes): " ++ String.fromInt (Bytes.width ctx.treasuryScript.compiledCode) ]
+                       , div [] [ text <| "Applied Script hash: " ++ Bytes.toHex scriptHash ]
+                       , div [] [ text <| "Applied Script size (bytes): " ++ String.fromInt (Bytes.width scriptBytes) ]
                        , button [ onClick InitializeTreasuryButtonClicked ] [ text "Initialize the multi-tenant treasury" ]
                        , displayErrors errors
                        ]
