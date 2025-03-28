@@ -3,7 +3,7 @@ port module Main exposing (main)
 import Browser
 import Bytes.Comparable as Bytes exposing (Bytes)
 import Cardano
-import Cardano.Address as Address exposing (Address, Credential(..), CredentialHash, NetworkId(..))
+import Cardano.Address as Address exposing (Address, Credential(..), NetworkId(..))
 import Cardano.Cip30 as Cip30
 import Cardano.MultiAsset as MultiAsset
 import Cardano.Script as Script exposing (PlutusScript, PlutusVersion(..), ScriptCbor)
@@ -90,13 +90,13 @@ setError e model =
             Debug.log "ERROR" e
     in
     case model of
-        WalletLoaded loadedWallet { errors } ->
+        WalletLoaded loadedWallet _ ->
             WalletLoaded loadedWallet { errors = e }
 
-        BlueprintLoaded loadedWallet unappliedScript { errors } ->
+        BlueprintLoaded loadedWallet unappliedScript _ ->
             BlueprintLoaded loadedWallet unappliedScript { errors = e }
 
-        ParametersSet appContext { errors } ->
+        ParametersSet appContext _ ->
             ParametersSet appContext { errors = e }
 
         _ ->

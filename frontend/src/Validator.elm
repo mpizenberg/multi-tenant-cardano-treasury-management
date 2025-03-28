@@ -1,12 +1,12 @@
-module Validator exposing (InitialMintRedeemer, WithdrawActionType(..), WithdrawRedeemer, initializeTreasury)
+module Validator exposing (WithdrawActionType(..), WithdrawRedeemer, initializeTreasury)
 
 import Bytes.Comparable as Bytes exposing (Bytes)
 import Bytes.Map
-import Cardano exposing (CredentialWitness(..), TxFinalizationError, TxFinalized, TxIntent)
-import Cardano.Address as Address exposing (Address, Credential(..), CredentialHash, NetworkId(..))
-import Cardano.Data as Data
+import Cardano exposing (CredentialWitness(..), TxIntent)
+import Cardano.Address as Address exposing (Address, Credential(..), NetworkId(..))
+import Cardano.Data as Data exposing (Data)
 import Cardano.MultiAsset as MultiAsset exposing (AssetName)
-import Cardano.Script as Script exposing (PlutusScript, PlutusVersion(..))
+import Cardano.Script as Script exposing (PlutusScript)
 import Cardano.Transaction exposing (Certificate(..))
 import Cardano.Utxo as Utxo exposing (Output, OutputReference)
 import Cardano.Value as Value
@@ -25,6 +25,14 @@ type alias InitialMintRedeemer =
     { scopes : List Scope
     , registerCertIndex : Int
     }
+
+
+initialMintRedeemerToData : InitialMintRedeemer -> Data
+initialMintRedeemerToData { scopes, registerCertIndex } =
+    Data.Constr Natural.zero
+        [ Data.List <| List.map Treasury.scopeToData scopes
+        , Data.Int <| Integer.fromSafeInt registerCertIndex
+        ]
 
 
 type alias WithdrawRedeemer =
@@ -104,15 +112,12 @@ initializeTreasury walletAddress uniqueUtxo script scopes =
                 ( Script.plutusVersion script
                 , Cardano.WitnessByValue <| Script.cborWrappedBytes script
                 )
-            , redeemerData = mintRedeemerData
+            , redeemerData =
+                \txBody ->
+                    InitialMintRedeemer scopes (registerCertIndex txBody.certificates)
+                        |> initialMintRedeemerToData
             , requiredSigners = scopeKeySigners
             }
-
-        mintRedeemerData txBody =
-            Data.Constr Natural.zero
-                [ Data.List <| List.map Treasury.scopeToData scopes
-                , Data.Int <| Integer.fromSafeInt <| registerCertIndex txBody.certificates
-                ]
 
         registerCertIndex certificates =
             List.Extra.findIndex isTreasuryReg certificates
@@ -195,15 +200,15 @@ initializeTreasury walletAddress uniqueUtxo script scopes =
     in
     List.concat
         -- Spend the UTxO parameterizing the treasury contract
-        [ [ spendFromWallet Value.zero [ uniqueUtxo ] ]
+        [ [ spendFromWallet Value.zero [ uniqueUtxo ]
 
-        -- Mint the treasury root NFT,
-        -- as well as each scope NFT
-        , [ mintIntent ]
+          -- Mint the treasury root NFT,
+          -- as well as each scope NFT
+          , mintIntent
 
-        -- The first output contains the treasury root NFT
-        -- as well as the script reference
-        , [ spendFromWallet (Value.onlyLovelace rootMinAda) []
+          -- The first output contains the treasury root NFT
+          -- as well as the script reference
+          , spendFromWallet (Value.onlyLovelace rootMinAda) []
           , Cardano.SendToOutput outputWithRootNftAndScriptRef
           ]
 
