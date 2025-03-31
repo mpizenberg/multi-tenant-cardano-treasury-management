@@ -76,9 +76,6 @@ pub fn validate_root_output(
   // Check that the stake credential is empty if not allowed to stake
   expect output.address.stake_credential == None || env.stake_allowed
 
-  // Check that the ref script is stored in the root output
-  expect output.reference_script == Some(policy_id)
-
   // Check that the output contains only some ada and the root NFT
   let expected_value =
     assets.from_lovelace(env.root_min_ada)

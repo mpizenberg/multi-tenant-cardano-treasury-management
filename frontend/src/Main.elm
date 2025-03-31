@@ -2,11 +2,12 @@ port module Main exposing (main)
 
 import Browser
 import Bytes.Comparable as Bytes exposing (Bytes)
-import Cardano
+import Cardano exposing (TxFinalized)
 import Cardano.Address as Address exposing (Address, Credential(..), NetworkId(..))
 import Cardano.Cip30 as Cip30
 import Cardano.MultiAsset as MultiAsset
 import Cardano.Script as Script exposing (PlutusScript, PlutusVersion(..), ScriptCbor)
+import Cardano.Transaction as Transaction exposing (Transaction)
 import Cardano.Uplc as Uplc
 import Cardano.Utxo as Utxo exposing (Output, OutputReference)
 import Cred exposing (ScopeOwner(..))
@@ -54,6 +55,8 @@ type Model
     | WalletLoaded LoadedWallet { errors : String }
     | BlueprintLoaded LoadedWallet UnappliedScript { errors : String }
     | ParametersSet AppContext { errors : String }
+    | Signing AppContext Action { tx : TxFinalized, errors : String }
+    | Submitting AppContext Action { tx : Transaction, errors : String }
 
 
 type alias LoadedWallet =
@@ -74,6 +77,10 @@ type alias AppContext =
     , treasuryScript : PlutusScript
     , scriptAddress : Address
     }
+
+
+type Action
+    = TreasuryInitialization
 
 
 init : () -> ( Model, Cmd Msg )
@@ -98,6 +105,12 @@ setError e model =
 
         ParametersSet appContext _ ->
             ParametersSet appContext { errors = e }
+
+        Signing ctx action { tx } ->
+            Signing ctx action { tx = tx, errors = e }
+
+        Submitting ctx action { tx } ->
+            Submitting ctx action { tx = tx, errors = e }
 
         _ ->
             model
@@ -141,6 +154,17 @@ update msg model =
 
                 ( Ok (Cip30.ApiResponse _ (Cip30.ChangeAddress address)), WalletLoading { wallet, utxos } ) ->
                     ( WalletLoaded { wallet = wallet, utxos = Utxo.refDictFromList utxos, changeAddress = address } { errors = "" }
+                    , Cmd.none
+                    )
+
+                ( Ok (Cip30.ApiResponse _ (Cip30.SignedTx vkeywitnesses)), Signing ctx action { tx } ) ->
+                    let
+                        -- Update the signatures of the Tx with the wallet response
+                        signedTx =
+                            Transaction.updateSignatures (\_ -> Just vkeywitnesses) tx.tx
+                    in
+                    ( Submitting ctx action { tx = signedTx, errors = "" }
+                      -- , toWallet (Cip30.encodeRequest (Cip30.submitTx ctx.loadedWallet.wallet signedTx))
                     , Cmd.none
                     )
 
@@ -249,8 +273,15 @@ update msg model =
                     Cardano.finalize ctx.localStateUtxos [] initializationTxIntents
             in
             case txResult of
-                Ok { tx } ->
-                    Debug.todo ""
+                Ok tx ->
+                    let
+                        _ =
+                            Debug.log "tx" <| Transaction.serialize tx.tx
+                    in
+                    ( Signing ctx TreasuryInitialization { tx = tx, errors = "" }
+                      -- TODO: here it should not require partial signing ... (report it to eternl?)
+                    , toWallet (Cip30.encodeRequest (Cip30.signTx ctx.loadedWallet.wallet { partialSign = True } tx.tx))
+                    )
 
                 Err err ->
                     ( setError (Debug.toString err) model, Cmd.none )
@@ -312,6 +343,47 @@ view model =
                        , div [] [ text <| "Applied Script hash: " ++ Bytes.toHex scriptHash ]
                        , div [] [ text <| "Applied Script size (bytes): " ++ String.fromInt (Bytes.width scriptBytes) ]
                        , button [ onClick InitializeTreasuryButtonClicked ] [ text "Initialize the multi-tenant treasury" ]
+                       , displayErrors errors
+                       ]
+                )
+
+        Signing ctx action { tx, errors } ->
+            let
+                scriptHash =
+                    Script.hash <| Script.Plutus ctx.treasuryScript
+
+                scriptBytes =
+                    Script.cborWrappedBytes ctx.treasuryScript
+            in
+            div []
+                (viewLoadedWallet ctx.loadedWallet
+                    ++ [ div [] [ text <| "☑️ Picked UTxO: " ++ (ctx.pickedUtxo |> (\u -> Bytes.toHex u.transactionId ++ "#" ++ String.fromInt u.outputIndex)) ]
+                       , div [] [ text <| "Applied Script hash: " ++ Bytes.toHex scriptHash ]
+                       , div [] [ text <| "Applied Script size (bytes): " ++ String.fromInt (Bytes.width scriptBytes) ]
+                       , div [] [ text <| "Signing " ++ Debug.toString action ++ " with Tx ID: " ++ (Bytes.toHex <| Transaction.computeTxId tx.tx) ++ " ..." ]
+                       , div []
+                            [ text <| "Expected signatures:"
+                            , div [] (List.map (\hash -> div [] [ text <| Bytes.toHex hash ]) tx.expectedSignatures)
+                            ]
+                       , displayErrors errors
+                       ]
+                )
+
+        Submitting ctx action { tx, errors } ->
+            let
+                scriptHash =
+                    Script.hash <| Script.Plutus ctx.treasuryScript
+
+                scriptBytes =
+                    Script.cborWrappedBytes ctx.treasuryScript
+            in
+            div []
+                (viewLoadedWallet ctx.loadedWallet
+                    ++ [ div [] [ text <| "☑️ Picked UTxO: " ++ (ctx.pickedUtxo |> (\u -> Bytes.toHex u.transactionId ++ "#" ++ String.fromInt u.outputIndex)) ]
+                       , div [] [ text <| "Applied Script hash: " ++ Bytes.toHex scriptHash ]
+                       , div [] [ text <| "Applied Script size (bytes): " ++ String.fromInt (Bytes.width scriptBytes) ]
+                       , div [] [ text <| "☑️ Tx Signed: " ++ Bytes.toHex (Transaction.computeTxId tx) ]
+                       , div [] [ text <| "Submitting " ++ Debug.toString action ++ " with Tx ID: " ++ (Bytes.toHex <| Transaction.computeTxId tx) ++ " ..." ]
                        , displayErrors errors
                        ]
                 )

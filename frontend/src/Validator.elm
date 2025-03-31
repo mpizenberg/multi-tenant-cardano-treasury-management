@@ -174,7 +174,7 @@ initializeTreasury walletAddress uniqueUtxo script scopes =
                 , assets = MultiAsset.onlyToken scriptHash rootAssetName Natural.one
                 }
             , datumOption = Just <| Utxo.datumValueFromData <| scopeNamesAsData
-            , referenceScript = Just <| Script.refFromScript <| Script.Plutus script
+            , referenceScript = Nothing
             }
 
         scopeNamesAsData =
