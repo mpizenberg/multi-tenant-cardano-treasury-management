@@ -66,41 +66,19 @@ to a designated address or the Cardano treasury, and the treasury NFTs must be b
 
 **Credentials**
 
-Each scope has a designated owner with credentials, which can be one of the following:
-- a single public key,
-- a script,
-- or a unique token (NFT).
+Each scope has a designated owner designated by a token with a unique policy ID.
+Tokens ownerships are proved using the [cardano-badges][badges] contract.
 
-In the case of a single public key, the proof of ownership is provided
-by adding the key hash into the list of required signers.
-In the case of a script, the proof of ownership is provided by a withdrawal certificate.
-And in the case of an NFT, the proof is provided by both
-a reference UTxO containing the NFT and a proof of ownership
-for the payment credential of that UTxO, either a key or a script.
-
-The NFT credential is recommended since it makes it easy to rotate the owner credentials,
-without the need to update the scope rules in the datum.
-Otherwise, changing the scope owner credentials must be authorized by all scope owners.
-
-Each action requiring scope owner credentials must present **badges** in the redeemer.
-
-**Badges**
-
-A "badge" is simply a way to present in a redeemer which credential is being purposely used.
-For a key credential, the badge simply states the public key hash.
-For a script credential, the badge simply states the script hash.
-For an NFT credential, the badge contains the NFT policy ID and asset name,
-as well as the index of the reference UTxO containing the NFT.
-
+Each action requiring scope owner credentials must present badges in the redeemer.
 Presented badges in a redeemer will be verified against the scope owner credentials.
 Instead of implicit approval by the presence of a credential in a transaction as a whole,
 badges guarantee that the intent of credential owners are explicit.
 
+[badges]: https://github.com/mpizenberg/cardano-badges
+
 **Security, Failsafe, and Recovery**
 
 For the security of the treasury, all critical actions must be authorized by all scope owners.
-We recommend scope owners to provide an NFT credential,
-stored in a multisig to be easily be rotated.
 
 In the case that a scope owner credential is definitively lost,
 it is still possible to change it with a majority of the scope owners, and a contestation period.

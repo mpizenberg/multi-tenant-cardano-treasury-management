@@ -2,3 +2,6 @@
 	path = frontend/elm-cardano
 	url = https://github.com/elm-cardano/elm-cardano.git
 	branch = release
+[submodule "cardano-badges"]
+	path = cardano-badges
+	url = https://github.com/mpizenberg/cardano-badges.git
